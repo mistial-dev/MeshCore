@@ -13,6 +13,7 @@ Commands:
   build-companion-firmwares: Build all companion firmwares for all build targets.
   build-repeater-firmwares: Build all repeater firmwares for all build targets.
   build-room-server-firmwares: Build all chat room server firmwares for all build targets.
+  build-pager-firmwares: Build all pager firmwares for all build targets.
 
 Examples:
 Build firmware for the "RAK_4631_repeater" device target
@@ -183,6 +184,10 @@ build_room_server_firmwares() {
 
 }
 
+build_pager_firmwares() {
+  build_all_firmwares_by_suffix "_pager"
+}
+
 build_firmwares() {
   build_companion_firmwares
   build_repeater_firmwares
@@ -219,4 +224,6 @@ elif [[ $1 == "build-repeater-firmwares" ]]; then
   build_repeater_firmwares
 elif [[ $1 == "build-room-server-firmwares" ]]; then
   build_room_server_firmwares
+elif [[ $1 == "build-pager-firmwares" ]]; then
+  build_pager_firmwares
 fi

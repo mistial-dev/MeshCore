@@ -219,7 +219,9 @@ void DataStore::loadPrefsInt(const char *filename, NodePrefs& _prefs, double& no
     file.read((uint8_t *)&_prefs.rx_delay_base, sizeof(_prefs.rx_delay_base));             // 72
     file.read((uint8_t *)&_prefs.advert_loc_policy, sizeof(_prefs.advert_loc_policy));     // 76
     file.read((uint8_t *)&_prefs.multi_acks, sizeof(_prefs.multi_acks));                   // 77
-    file.read(pad, 2);                                                                     // 78
+    // previously 2 bytes of padding at 78; reuse 1 byte for alert_policy, keep 1 byte pad for future
+    file.read((uint8_t *)&_prefs.alert_policy, sizeof(_prefs.alert_policy));               // 78
+    file.read(pad, 1);                                                                     // 79
     file.read((uint8_t *)&_prefs.ble_pin, sizeof(_prefs.ble_pin));                         // 80
 
     file.close();
@@ -250,7 +252,9 @@ void DataStore::savePrefs(const NodePrefs& _prefs, double node_lat, double node_
     file.write((uint8_t *)&_prefs.rx_delay_base, sizeof(_prefs.rx_delay_base));             // 72
     file.write((uint8_t *)&_prefs.advert_loc_policy, sizeof(_prefs.advert_loc_policy));     // 76
     file.write((uint8_t *)&_prefs.multi_acks, sizeof(_prefs.multi_acks));                   // 77
-    file.write(pad, 2);                                                                     // 78
+    // previously 2 bytes pad; store alert_policy then 1 byte pad for forward-compat
+    file.write((uint8_t *)&_prefs.alert_policy, sizeof(_prefs.alert_policy));               // 78
+    file.write(pad, 1);                                                                     // 79
     file.write((uint8_t *)&_prefs.ble_pin, sizeof(_prefs.ble_pin));                         // 80
 
     file.close();
@@ -324,9 +328,10 @@ void DataStore::loadChannels(DataStoreHost* host) {
       uint8_t channel_idx = 0;
       while (!full) {
         ChannelDetails ch;
-        uint8_t unused[4];
+        uint8_t opt4[4];
 
-        bool success = (file.read(unused, 4) == 4);
+        bool success = (file.read(opt4, 4) == 4);
+        ch.options = opt4[0]; // use only 1 byte; leave remaining reserved
         success = success && (file.read((uint8_t *)ch.name, 32) == 32);
         success = success && (file.read((uint8_t *)ch.channel.secret, 32) == 32);
 
@@ -347,11 +352,11 @@ void DataStore::saveChannels(DataStoreHost* host) {
   if (file) {
     uint8_t channel_idx = 0;
     ChannelDetails ch;
-    uint8_t unused[4];
-    memset(unused, 0, 4);
-
+    // write options first (uses former 'unused' 4 bytes); only first byte used, rest reserved
+    
     while (host->getChannelForSave(channel_idx, ch)) {
-      bool success = (file.write(unused, 4) == 4);
+      uint8_t opt4[4] = { ch.options, 0, 0, 0 };
+      bool success = (file.write(opt4, 4) == 4);
       success = success && (file.write((uint8_t *)ch.name, 32) == 32);
       success = success && (file.write((uint8_t *)ch.channel.secret, 32) == 32);
 

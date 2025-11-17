@@ -70,4 +70,9 @@ public:
   void loop() override;
 
   void shutdown(bool restart = false);
+#ifdef MESH_PAGER_MODE
+private:
+  bool _pagerAlertActive = false;
+  unsigned long _pagerNextToneAt = 0;
+#endif
 };

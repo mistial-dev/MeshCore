@@ -1,4 +1,6 @@
 #include "MyMesh.h"
+#include <helpers/TxtDataHelpers.h>
+#include <helpers/AlertPolicy.h>
 
 #include <Arduino.h> // needed for PlatformIO
 #include <Mesh.h>
@@ -374,7 +376,9 @@ void MyMesh::queueMessage(const ContactInfo &from, uint8_t txt_type, mesh::Packe
   bool should_display = txt_type == TXT_TYPE_PLAIN || txt_type == TXT_TYPE_SIGNED_PLAIN;
   if (should_display && _ui) {
     _ui->newMsg(path_len, from.name, text, offline_queue_len);
-    if (!_serial->isConnected()) {
+
+    uint8_t policy = _prefs.alert_policy;
+    if (shouldAlert(policy, _serial->isConnected(), text)) {
       _ui->notify(UIEventType::contactMessage);
     }
   }
@@ -462,18 +466,34 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
     frame[0] = PUSH_CODE_MSG_WAITING; // send push 'tickle'
     _serial->writeFrame(frame, 1);
   } else {
-#ifdef DISPLAY_CLASS
-    if (_ui) _ui->notify(UIEventType::channelMessage);
-#endif
+    // app offline; notification decision handled below with bell-only gating
   }
+  // Resolve whether to notify (bell-only policy and pager default-room filter handled below under DISPLAY_CLASS)
 #ifdef DISPLAY_CLASS
-  // Get the channel name from the channel index
+  // Get the channel name and options from the channel index
   const char *channel_name = "Unknown";
   ChannelDetails channel_details;
-  if (getChannel(channel_idx, channel_details)) {
+  bool have_ch = getChannel(channel_idx, channel_details);
+  if (have_ch) {
     channel_name = channel_details.name;
   }
-  if (_ui) _ui->newMsg(path_len, channel_name, text, offline_queue_len);
+  if (_ui) {
+    _ui->newMsg(path_len, channel_name, text, offline_queue_len);
+
+    // Resolve effective policy and compute allow_notify
+    uint8_t policy = resolveAlertPolicy(_prefs.alert_policy, have_ch ? channel_details.options : 0);
+    bool allow_notify = shouldAlert(policy, _serial->isConnected(), text);
+
+#ifdef MESH_PAGER_MODE
+    // Skip alerts on default Public room (match the default PSK exactly)
+    if (have_ch && allow_notify && isDefaultPublicChannelSecret(channel_details.channel.secret, sizeof(channel_details.channel.secret))) {
+      allow_notify = false;
+    }
+#endif
+    if (allow_notify) {
+      _ui->notify(UIEventType::channelMessage);
+    }
+  }
 #endif
 }
 
@@ -726,6 +746,11 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   _prefs.bw = LORA_BW;
   _prefs.cr = LORA_CR;
   _prefs.tx_power_dbm = LORA_TX_POWER;
+#ifdef DEFAULT_ALERT_POLICY
+  _prefs.alert_policy = DEFAULT_ALERT_POLICY;
+#else
+  _prefs.alert_policy = ALERT_POLICY_OFFLINE_ONLY; // default global alert policy
+#endif
   //_prefs.rx_delay_base = 10.0f;  enable once new algo fixed
 }
 
@@ -849,16 +874,20 @@ void MyMesh::handleCmdFrame(size_t len) {
     i += 4;
     memcpy(&out_frame[i], &lon, 4);
     i += 4;
-    out_frame[i++] = _prefs.multi_acks; // new v7+
-    out_frame[i++] = _prefs.advert_loc_policy;
-    out_frame[i++] = (_prefs.telemetry_mode_env << 4) | (_prefs.telemetry_mode_loc << 2) |
-                     (_prefs.telemetry_mode_base); // v5+
-    out_frame[i++] = _prefs.manual_add_contacts;
+  out_frame[i++] = _prefs.multi_acks; // new v7+
+  out_frame[i++] = _prefs.advert_loc_policy;
+  out_frame[i++] = (_prefs.telemetry_mode_env << 4) | (_prefs.telemetry_mode_loc << 2) |
+                   (_prefs.telemetry_mode_base); // v5+
+  out_frame[i++] = _prefs.manual_add_contacts;
+  // v9+: include alert policy as one extra byte for apps that support it
+  if (app_target_ver >= 9) {
+    out_frame[i++] = _prefs.alert_policy;
+  }
 
-    uint32_t freq = _prefs.freq * 1000;
-    memcpy(&out_frame[i], &freq, 4);
-    i += 4;
-    uint32_t bw = _prefs.bw * 1000;
+  uint32_t freq = _prefs.freq * 1000;
+  memcpy(&out_frame[i], &freq, 4);
+  i += 4;
+  uint32_t bw = _prefs.bw * 1000;
     memcpy(&out_frame[i], &bw, 4);
     i += 4;
     out_frame[i++] = _prefs.sf;
@@ -1184,6 +1213,9 @@ void MyMesh::handleCmdFrame(size_t len) {
         _prefs.advert_loc_policy = cmd_frame[3];
         if (len >= 5) {
           _prefs.multi_acks = cmd_frame[4];
+          if (len >= 6) {
+            _prefs.alert_policy = cmd_frame[5];
+          }
         }
       }
     }
@@ -1408,6 +1440,11 @@ void MyMesh::handleCmdFrame(size_t len) {
     StrHelper::strncpy(channel.name, (char *)&cmd_frame[2], 32);
     memset(channel.channel.secret, 0, sizeof(channel.channel.secret));
     memcpy(channel.channel.secret, &cmd_frame[2 + 32], 16); // NOTE: only 128-bit supported
+    channel.options = 0;
+    int opt_idx = 2 + 32 + 16;
+    if (len >= opt_idx + 1) {
+      channel.options = cmd_frame[opt_idx]; // use only one byte for options
+    }
     if (setChannel(channel_idx, channel)) {
       saveChannels();
       writeOKFrame();
@@ -1588,6 +1625,27 @@ void MyMesh::checkCLIRescueCmd() {
         _prefs.ble_pin = atoi(&config[4]);
         savePrefs();
         Serial.printf("  > pin is now %06d\n", _prefs.ble_pin);
+      } else if (memcmp(config, "alert.policy ", 13) == 0) {
+        const char* val = &config[13];
+        if (memcmp(val, "bell", 4) == 0) {
+          _prefs.alert_policy = ALERT_POLICY_BELL_ONLY;
+          savePrefs();
+          Serial.println("  > alert.policy=bell");
+        } else if (memcmp(val, "offline", 7) == 0) {
+          _prefs.alert_policy = ALERT_POLICY_OFFLINE_ONLY;
+          savePrefs();
+          Serial.println("  > alert.policy=offline");
+        } else {
+          Serial.println("  Error: value must be 'offline' or 'bell'");
+        }
+      } else {
+        Serial.printf("  Error: unknown config: %s\n", config);
+      }
+    } else if (memcmp(cli_command, "get ", 4) == 0) {
+      const char* config = &cli_command[4];
+      if (memcmp(config, "alert.policy", 12) == 0) {
+        Serial.print("  > ");
+        Serial.println(_prefs.alert_policy == ALERT_POLICY_BELL_ONLY ? "bell" : "offline");
       } else {
         Serial.printf("  Error: unknown config: %s\n", config);
       }

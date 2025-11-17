@@ -556,11 +556,18 @@ void UITask::notify(UIEventType t) {
 #if defined(PIN_BUZZER)
 switch(t){
   case UIEventType::contactMessage:
-    // gemini's pick
-    buzzer.play("MsgRcv3:d=4,o=6,b=200:32e,32g,32b,16c7");
+    if (_node_prefs && _node_prefs->alert_policy == ALERT_POLICY_BELL_ONLY) {
+      buzzer.play("BellCtr:d=8,o=6,b=180:8a,8a,8a,8a,8a");
+    } else {
+      buzzer.play("MsgRcv3:d=4,o=6,b=200:32e,32g,32b,16c7");
+    }
     break;
   case UIEventType::channelMessage:
-    buzzer.play("kerplop:d=16,o=6,b=120:32g#,32c#");
+    if (_node_prefs && _node_prefs->alert_policy == ALERT_POLICY_BELL_ONLY) {
+      buzzer.play("BellChn:d=8,o=6,b=180:8g,8g,8g,8g,8g");
+    } else {
+      buzzer.play("kerplop:d=16,o=6,b=120:32g#,32c#");
+    }
     break;
   case UIEventType::ack:
     buzzer.play("ack:d=32,o=8,b=120:c");

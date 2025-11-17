@@ -92,11 +92,40 @@ void UITask::notify(UIEventType t) {
 #if defined(PIN_BUZZER)
 switch(t){
   case UIEventType::contactMessage:
-    // gemini's pick
-    buzzer.play("MsgRcv3:d=4,o=6,b=200:32e,32g,32b,16c7");
+    // Bell-only mode: use longer, more active rings
+    if (_node_prefs && _node_prefs->alert_policy == ALERT_POLICY_BELL_ONLY) {
+      buzzer.play("BellCtr:d=8,o=6,b=180:8a,8a,8a,8a,8a");
+    } else {
+      // default
+      buzzer.play("MsgRcv3:d=4,o=6,b=200:32e,32g,32b,16c7");
+    }
+#ifdef MESH_PAGER_MODE
+    _pagerAlertActive = true;
+    _pagerNextToneAt = millis() + static_cast<uint32_t>((
+#ifdef PAGER_RING_REPEAT_MS
+                         PAGER_RING_REPEAT_MS
+#else
+                         2000
+#endif
+                       ));
+#endif
     break;
   case UIEventType::channelMessage:
-    buzzer.play("kerplop:d=16,o=6,b=120:32g#,32c#");
+    if (_node_prefs && _node_prefs->alert_policy == ALERT_POLICY_BELL_ONLY) {
+      buzzer.play("BellChn:d=8,o=6,b=180:8g,8g,8g,8g,8g");
+    } else {
+      buzzer.play("kerplop:d=16,o=6,b=120:32g#,32c#");
+    }
+#ifdef MESH_PAGER_MODE
+    _pagerAlertActive = true;
+    _pagerNextToneAt = millis() + static_cast<uint32_t>((
+#ifdef PAGER_RING_REPEAT_MS
+                         PAGER_RING_REPEAT_MS
+#else
+                         2000
+#endif
+                       ));
+#endif
     break;
   case UIEventType::ack:
     buzzer.play("ack:d=32,o=8,b=120:c");
@@ -251,6 +280,12 @@ void UITask::renderCurrScreen() {
 
 void UITask::userLedHandler() {
 #ifdef PIN_STATUS_LED
+#ifdef MESH_PAGER_MODE
+  if (_pagerAlertActive) {
+    digitalWrite(PIN_STATUS_LED, 1);
+    return;
+  }
+#endif
   static int state = 0;
   static int next_change = 0;
   static int last_increment = 0;
@@ -313,6 +348,23 @@ void UITask::loop() {
 
 #ifdef PIN_BUZZER
   if (buzzer.isPlaying())  buzzer.loop();
+#ifdef MESH_PAGER_MODE
+  if (_pagerAlertActive) {
+    if (!buzzer.isPlaying() && millis() > _pagerNextToneAt) {
+      // re-trigger pager ring
+      if (_node_prefs && _node_prefs->alert_policy == ALERT_POLICY_BELL_ONLY) {
+        buzzer.play("BellCtr:d=8,o=6,b=180:8a,8a,8a,8a,8a");
+      }
+      _pagerNextToneAt = millis() + static_cast<uint32_t>((
+#ifdef PAGER_RING_REPEAT_MS
+                           PAGER_RING_REPEAT_MS
+#else
+                           2000
+#endif
+                         ));
+    }
+  }
+#endif
 #endif
 
   if (_display != NULL && _display->isOn()) {
@@ -336,6 +388,16 @@ void UITask::loop() {
 
 void UITask::handleButtonAnyPress() {
   MESH_DEBUG_PRINTLN("UITask: any press triggered");
+#ifdef MESH_PAGER_MODE
+  if (_pagerAlertActive) {
+    // Acknowledge alert: chirp and clear
+    notify(UIEventType::ack);
+    _pagerAlertActive = false;
+#ifdef PIN_STATUS_LED
+    digitalWrite(PIN_STATUS_LED, 0);
+#endif
+  }
+#endif
   // called on any button press before other events, to wake up the display quickly
   // do not refresh the display here, as it may block the button handler
   if (_display != NULL) {

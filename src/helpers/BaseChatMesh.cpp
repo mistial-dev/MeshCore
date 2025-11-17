@@ -739,6 +739,7 @@ ChannelDetails* BaseChatMesh::addChannel(const char* name, const char* psk_base6
     if (len == 32 || len == 16) {
       mesh::Utils::sha256(dest->channel.hash, sizeof(dest->channel.hash), dest->channel.secret, len);
       StrHelper::strncpy(dest->name, name, sizeof(dest->name));
+      dest->options = 0; // default: no per-channel overrides
       num_channels++;
       return dest;
     }

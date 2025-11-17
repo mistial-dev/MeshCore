@@ -12,6 +12,10 @@
 #define ADVERT_LOC_SHARE      1
 #define ADVERT_LOC_PREFS      2
 
+// Alert policy (global)
+#define ALERT_POLICY_OFFLINE_ONLY 0  // default behavior: alert when app is disconnected
+#define ALERT_POLICY_BELL_ONLY    1  // only alert when message contains ASCII BEL ('\a') or bell emoji
+
 struct NodePrefs { // persisted to file
   float airtime_factor;
   char node_name[32];
@@ -47,6 +51,8 @@ struct NodePrefs { // persisted to file
   uint32_t gps_interval; // in seconds
   uint8_t advert_loc_policy;
   uint32_t discovery_mod_timestamp;
+  // Global alert policy
+  uint8_t alert_policy; // ALERT_POLICY_*
 };
 
 class CommonCLICallbacks {

@@ -14,4 +14,8 @@ public:
   static const char* ftoa(float f);
   static bool isBlank(const char* str);
   static uint32_t fromHex(const char* src);
+  // Returns true if text contains an alert marker (ASCII BEL or common bell emojis)
+  static bool hasBellMarker(const char* text);
+  // Copies src into dest, removing ASCII BEL control characters. Emoji are preserved.
+  static void stripBellControl(char* dest, const char* src, size_t buf_sz);
 };

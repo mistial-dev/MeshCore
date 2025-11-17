@@ -159,3 +159,39 @@ uint32_t StrHelper::fromHex(const char* src) {
   }
   return n;
 }
+
+bool StrHelper::hasBellMarker(const char* text) {
+  if (!text) return false;
+  const unsigned char* p = (const unsigned char*) text;
+  while (*p) {
+    if (*p == '\a') return true; // ASCII BEL
+    // Guarded UTF-8 checks for bell emojis
+    // U+1F514 BELL: F0 9F 94 94
+    if (p[0] == 0xF0 && p[1] != 0 && p[2] != 0 && p[3] != 0 &&
+        p[1] == 0x9F && p[2] == 0x94 && p[3] == 0x94) return true;
+    // U+1F6CE BELLHOP BELL: F0 9F 9B 8E
+    if (p[0] == 0xF0 && p[1] != 0 && p[2] != 0 && p[3] != 0 &&
+        p[1] == 0x9F && p[2] == 0x9B && p[3] == 0x8E) return true;
+
+    // Advance by UTF-8 sequence length (safe; only examines lead byte)
+    if (*p < 0x80) p += 1;                 // ASCII
+    else if ((*p & 0xE0) == 0xC0) p += 2;  // 2-byte
+    else if ((*p & 0xF0) == 0xE0) p += 3;  // 3-byte
+    else if ((*p & 0xF8) == 0xF0) p += 4;  // 4-byte
+    else p += 1; // fallback
+  }
+  return false;
+}
+
+void StrHelper::stripBellControl(char* dest, const char* src, size_t buf_sz) {
+  if (buf_sz == 0) return;
+  if (!dest || !src) { if (dest && buf_sz) dest[0] = 0; return; }
+  size_t i = 0;
+  while (*src && i + 1 < buf_sz) {
+    if (*src != '\a') {
+      dest[i++] = *src;
+    }
+    src++;
+  }
+  dest[i] = 0;
+}

@@ -8,6 +8,10 @@
 #define ADVERT_LOC_NONE       0
 #define ADVERT_LOC_SHARE      1
 
+// Alert policy (global)
+#define ALERT_POLICY_OFFLINE_ONLY 0  // default behavior: alert when app is disconnected
+#define ALERT_POLICY_BELL_ONLY    1  // only alert when message contains ASCII BEL ('\a')
+
 struct NodePrefs {  // persisted to file
   float airtime_factor;
   char node_name[32];
@@ -24,4 +28,6 @@ struct NodePrefs {  // persisted to file
   float rx_delay_base;
   uint32_t ble_pin;
   uint8_t  advert_loc_policy;
+  // Global alert policy
+  uint8_t alert_policy; // ALERT_POLICY_*
 };
