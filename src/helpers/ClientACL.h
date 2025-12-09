@@ -25,6 +25,8 @@ struct ClientInfo {
       uint32_t push_post_timestamp;
       unsigned long ack_timeout;
       uint8_t  push_failures;
+      unsigned long last_outbound_ms;
+      unsigned long last_heartbeat_ms;
     } room;
   } extra;
   

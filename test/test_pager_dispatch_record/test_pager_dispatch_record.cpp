@@ -48,10 +48,19 @@ void test_truncated_file_rejected() {
   TEST_ASSERT_EQUAL_UINT8(0xAA, out.dispatch_pub_key[0]); // unchanged
 }
 
+void test_wrong_version_rejected() {
+  PagerDispatchRecord rec{};
+  rec.version = PagerDispatchRecord::kVersion + 1;
+  PagerDispatchRecord out{};
+  bool ok = PagerDispatchRecord::loadFromBuffer(reinterpret_cast<const uint8_t*>(&rec), sizeof(rec), out);
+  TEST_ASSERT_FALSE(ok);
+}
+
 int main(int, char**) {
   UNITY_BEGIN();
   RUN_TEST(test_defaults_and_clear);
   RUN_TEST(test_round_trip_file);
   RUN_TEST(test_truncated_file_rejected);
+  RUN_TEST(test_wrong_version_rejected);
   return UNITY_END();
 }

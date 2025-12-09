@@ -14,13 +14,13 @@
 
 ## Dispatcher Behavior (`env:t1000e_dispatch_usb`)
 - Advertises the dispatch bit and should prefix the room name with `[DISPATCH]`.
-- Heartbeat expectation: emit at least one packet per minute; pagers watch for >60s of silence.
+- Heartbeat expectation: emit at least one packet per minute; pagers watch for >60s of silence. The dispatch polls clients round-robin with a lightweight telemetry request (~100 ms airtime ≈0.17% duty at 60s) and skips nodes that already saw outbound traffic within the interval.
 - Telemetry is pull-only: dispatcher requests, pagers respond in a slotted window (default 8 slots/2400 ms keyed by pager pubkey hash). Two-shot ACKs are expected for pages/telemetry.
 - Filters paging traffic to admins only; other room traffic remains unchanged for compatibility.
 
 ## Pager Client Behavior (`env:t1000e_pager_client_usb`, optional `_ble`)
 - Inert until connected to a dispatch (advert bit present). Sends while disconnected return `RESP_CODE_DISABLED`, buzz, and blink the LED if available.
-- Caches the last joined dispatch in `/pager_dispatch.bin` (v2: pubkey/name/timestamp), enforcing a single-dispatch rule without touching existing prefs/contacts. Loader accepts v1 for forward compat.
+- Caches the last joined dispatch in `/pager_dispatch.bin` (v2: pubkey/name/timestamp), enforcing a single-dispatch rule without touching existing prefs/contacts. Loader accepts v1 for forward compat. Non-dispatch adverts are ignored/dropped so the app only surfaces dispatch rooms.
 - Auto reconnect: after 60s of silence/disconnect, attempt passwordless re-login to the cached dispatch, then back off to every 5 minutes. Passwords are not cached; relies on the room remembering the node.
 - Heartbeat/watchdog: >60s without dispatch traffic raises alert level C and LED blink until reconnect or user acknowledgement.
 - Alerts (A–E) with RTTTL tones live in `examples/companion_radio/PagerAlertTones.h`; level E latches until a button press. Alert defaults: dispatch text/channel messages map to D unless `[PRIO:X]` overrides. LED mirrors alert state when present.

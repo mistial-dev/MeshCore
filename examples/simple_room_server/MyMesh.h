@@ -74,6 +74,10 @@
 #ifndef TXT_ACK_DELAY
   #define TXT_ACK_DELAY     200
 #endif
+#ifndef DISPATCH_HEARTBEAT_INTERVAL_MS
+  // Heartbeat/telemetry cadence. Keep airtime overhead low: with ~100ms airtime per poll, 60s is ~0.17% duty.
+  #define DISPATCH_HEARTBEAT_INTERVAL_MS 60000
+#endif
 
 #define FIRMWARE_ROLE "room_server"
 

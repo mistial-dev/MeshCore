@@ -24,7 +24,7 @@ struct PagerDispatchRecord {
     if (buf == nullptr || len != sizeof(PagerDispatchRecord)) return false;
     PagerDispatchRecord tmp{};
     memcpy(&tmp, buf, sizeof(PagerDispatchRecord));
-    if (tmp.version != kVersion && tmp.version != 1) return false;
+    if (tmp.version != kVersion) return false;
     out = tmp;
     return true;
   }

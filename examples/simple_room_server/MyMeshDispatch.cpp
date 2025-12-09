@@ -2,10 +2,6 @@
 
 #ifdef PAGER_MODE
 
-#ifndef DISPATCH_TELEM_POLL_INTERVAL_MS
-#define DISPATCH_TELEM_POLL_INTERVAL_MS 120000UL
-#endif
-
 bool MyMesh::sendTelemetryRequest(ClientInfo* client) {
   if (client == nullptr) return false;
   uint8_t temp[13];
@@ -23,6 +19,7 @@ bool MyMesh::sendTelemetryRequest(ClientInfo* client) {
   } else {
     sendDirect(pkt, client->out_path, client->out_path_len);
   }
+  client->extra.room.last_outbound_ms = millis();
   return true;
 }
 
@@ -30,7 +27,7 @@ void MyMesh::pollTelemetryRoundRobin() {
   unsigned long now = millis();
   if (next_telem_poll != 0 && !millisHasNowPassed(next_telem_poll)) return;
   if (acl.getNumClients() == 0) {
-    next_telem_poll = futureMillis(DISPATCH_TELEM_POLL_INTERVAL_MS);
+    next_telem_poll = futureMillis(DISPATCH_HEARTBEAT_INTERVAL_MS);
     return;
   }
 
@@ -43,8 +40,13 @@ void MyMesh::pollTelemetryRoundRobin() {
 
     if (client->permissions == 0) continue; // deleted
     if (client->out_path_len < 0) continue; // no path yet
-    // throttle polls to recently active nodes; skip idle nodes with no activity ever
     if (client->last_activity == 0) continue;
+
+    // Skip if we recently sent something to this client inside the heartbeat window.
+    if (client->extra.room.last_outbound_ms != 0 &&
+        now - client->extra.room.last_outbound_ms < DISPATCH_HEARTBEAT_INTERVAL_MS) {
+      continue;
+    }
 
     if (sendTelemetryRequest(client)) {
       sent = true;
@@ -52,7 +54,7 @@ void MyMesh::pollTelemetryRoundRobin() {
     }
   }
 
-  next_telem_poll = futureMillis(sent ? DISPATCH_TELEM_POLL_INTERVAL_MS : DISPATCH_TELEM_POLL_INTERVAL_MS / 4);
+  next_telem_poll = futureMillis(sent ? DISPATCH_HEARTBEAT_INTERVAL_MS : DISPATCH_HEARTBEAT_INTERVAL_MS / 4);
 }
 
 #endif // PAGER_MODE

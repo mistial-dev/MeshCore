@@ -82,6 +82,7 @@ void MyMesh::pushPostToClient(ClientInfo *client, PostInfo &post) {
           futureMillis(PUSH_TIMEOUT_BASE + PUSH_ACK_TIMEOUT_FACTOR * (client->out_path_len + 1));
     }
     _num_post_pushes++; // stats
+    client->extra.room.last_outbound_ms = millis();
   } else {
     client->extra.room.pending_ack = 0;
     MESH_DEBUG_PRINTLN("Unable to push post to client");
