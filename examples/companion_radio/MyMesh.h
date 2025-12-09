@@ -213,6 +213,12 @@ private:
   bool isDispatchMatch(const ContactInfo& contact) const;
   bool requireDispatchConnection(uint8_t cmd);
   bool requireDispatchTarget(const ContactInfo* contact);
+  void pagerLoop();
+  void pagerHandleLoginSuccess(const ContactInfo& contact);
+  bool pagerShouldAcceptCLI(const ContactInfo& from);
+  bool pagerPreprocessIncoming(const ContactInfo& from, const char*& text, bool is_channel);
+  bool pagerPreprocessChannel(const char*& text);
+  bool pagerAllowTelemetry(const ContactInfo& from);
 #if defined(PIN_BUZZER)
   genericBuzzer* pager_buzzer_ptr;
   bool pager_buzzer_owned;
