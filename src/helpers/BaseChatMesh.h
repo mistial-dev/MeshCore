@@ -1,6 +1,9 @@
 #pragma once
 
+#ifndef UNIT_TEST
 #include <Arduino.h>   // needed for PlatformIO
+#endif
+#include <helpers/AckHash.h>
 #include <Mesh.h>
 #include <helpers/AdvertDataHelpers.h>
 #include <helpers/TxtDataHelpers.h>
@@ -63,6 +66,14 @@ class BaseChatMesh : public mesh::Mesh {
   int sort_array[MAX_CONTACTS];
   int matching_peer_indexes[MAX_SEARCH_RESULTS];
   unsigned long txt_send_timeout;
+#ifdef PAGER_MODE
+  // Tracks which contacts advertised dispatch capability; pager clients use it to gate special behavior.
+  bool dispatch_flags[MAX_CONTACTS];
+#endif
+#ifdef PAGER_NODE
+  bool pager_dispatch_allowed;
+  mesh::Identity pager_dispatch_id;
+#endif
 #ifdef MAX_GROUP_CHANNELS
   ChannelDetails channels[MAX_GROUP_CHANNELS];
   int num_channels;  // only for addChannel()
@@ -74,11 +85,17 @@ class BaseChatMesh : public mesh::Mesh {
   mesh::Packet* composeMsgPacket(const ContactInfo& recipient, uint32_t timestamp, uint8_t attempt, const char *text, uint32_t& expected_ack);
   void sendAckTo(const ContactInfo& dest, uint32_t ack_hash);
 
+#ifdef UNIT_TEST
+  uint32_t computeAckHashForTest(const mesh::Identity& peer_id, const uint8_t* data, size_t len);
+#endif
 protected:
   BaseChatMesh(mesh::Radio& radio, mesh::MillisecondClock& ms, mesh::RNG& rng, mesh::RTCClock& rtc, mesh::PacketManager& mgr, mesh::MeshTables& tables)
       : mesh::Mesh(radio, ms, rng, rtc, mgr, tables)
   { 
     num_contacts = 0;
+#ifdef PAGER_MODE
+    memset(dispatch_flags, 0, sizeof(dispatch_flags));
+#endif
   #ifdef MAX_GROUP_CHANNELS
     memset(channels, 0, sizeof(channels));
     num_channels = 0;
@@ -88,7 +105,17 @@ protected:
     memset(connections, 0, sizeof(connections));
   }
 
-  void resetContacts() { num_contacts = 0; }
+  void resetContacts() {
+    num_contacts = 0;
+#ifdef PAGER_MODE
+    memset(dispatch_flags, 0, sizeof(dispatch_flags));
+#endif
+  }
+#ifdef PAGER_MODE
+  bool isDispatchContact(const ContactInfo& contact) const;
+  void setDispatchFlag(const ContactInfo& contact, bool is_dispatch);
+  int findContactIndex(const ContactInfo& contact) const;
+#endif
 
   // 'UI' concepts, for sub-classes to implement
   virtual bool isAutoAddEnabled() const { return true; }
@@ -109,6 +136,8 @@ protected:
 
   virtual void sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis=0);
   virtual void sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pkt, uint32_t delay_millis=0);
+  virtual uint32_t getAckDelayMillis(const ContactInfo& dest, bool is_multi) const { return 0; }
+  virtual uint32_t getRequestResponseDelayMillis(const ContactInfo& contact, uint8_t req_type) const { return 0; }
 
   // storage concepts, for sub-classes to override/implement
   virtual int  getBlobByKey(const uint8_t key[], int key_len, uint8_t dest_buf[]) { return 0; }  // not implemented
@@ -161,4 +190,14 @@ public:
   int findChannelIdx(const mesh::GroupChannel& ch);
 
   void loop();
+#ifdef UNIT_TEST
+  uint32_t testGetAckDelay(const ContactInfo& dest, bool is_multi) const { return getAckDelayMillis(dest, is_multi); }
+  uint32_t testGetReqDelay(const ContactInfo& dest, uint8_t req_type) const { return getRequestResponseDelayMillis(dest, req_type); }
+  void testSetDispatchFlag(const ContactInfo& contact, bool is_dispatch) { setDispatchFlag(contact, is_dispatch); }
+#if !defined(ARDUINO)
+  // Stub implementations for Arduino deps in UNIT_TEST mode
+  void pinMode(int, int) {}
+  void digitalWrite(int, int) {}
+#endif
+#endif
 };

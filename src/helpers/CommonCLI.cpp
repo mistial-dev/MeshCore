@@ -169,12 +169,21 @@ void CommonCLI::savePrefs() {
 uint8_t CommonCLI::buildAdvertData(uint8_t node_type, uint8_t* app_data) {
   if (_prefs->advert_loc_policy == ADVERT_LOC_NONE) {
     AdvertDataBuilder builder(node_type, _prefs->node_name);
+#if defined(PAGER_MODE) && defined(DISPATCH_NODE)
+    if (node_type == ADV_TYPE_ROOM) builder.setFeat1(builder.getFeat1() | ADV_FEAT1_DISPATCH);
+#endif
     return builder.encodeTo(app_data);
   } else if (_prefs->advert_loc_policy == ADVERT_LOC_SHARE) {
     AdvertDataBuilder builder(node_type, _prefs->node_name, _sensors->node_lat, _sensors->node_lon);
+#if defined(PAGER_MODE) && defined(DISPATCH_NODE)
+    if (node_type == ADV_TYPE_ROOM) builder.setFeat1(builder.getFeat1() | ADV_FEAT1_DISPATCH);
+#endif
     return builder.encodeTo(app_data);
   } else {
     AdvertDataBuilder builder(node_type, _prefs->node_name, _prefs->node_lat, _prefs->node_lon);
+#if defined(PAGER_MODE) && defined(DISPATCH_NODE)
+    if (node_type == ADV_TYPE_ROOM) builder.setFeat1(builder.getFeat1() | ADV_FEAT1_DISPATCH);
+#endif
     return builder.encodeTo(app_data);
   }
 }

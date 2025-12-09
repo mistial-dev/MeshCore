@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "DataStore.h"
+#include "PagerDispatchRecord.h"
 
 #if defined(EXTRAFS) || defined(QSPIFLASH)
   #define MAX_BLOBRECS 100
@@ -589,4 +590,32 @@ bool DataStore::putBlobByKey(const uint8_t key[], int key_len, const uint8_t src
   }
   return false; // error
 }
+
 #endif
+
+static const char* kPagerDispatchPath = "/pager_dispatch.bin";
+
+bool DataStore::loadPagerDispatchRecord(PagerDispatchRecord& rec) {
+  // Pager-only cache of the last dispatch we successfully joined; lives outside
+  // the main prefs/contacts file so upstream layouts remain untouched.
+  File f = openRead(_getContactsChannelsFS(), kPagerDispatchPath);
+  if (!f) return false;
+
+  PagerDispatchRecord tmp{};
+  size_t n = f.read(reinterpret_cast<uint8_t*>(&tmp), sizeof(PagerDispatchRecord));
+  f.close();
+
+  if (PagerDispatchRecord::loadFromBuffer(reinterpret_cast<const uint8_t*>(&tmp), n, rec)) {
+    // sanity check: pubkey not garbage-only zeros allowed to mean "unset"
+    return true;
+  }
+  return false;
+}
+
+bool DataStore::savePagerDispatchRecord(const PagerDispatchRecord& rec) {
+  File f = openWrite(_getContactsChannelsFS(), kPagerDispatchPath);
+  if (!f) return false;
+  size_t n = f.write(reinterpret_cast<const uint8_t*>(&rec), sizeof(PagerDispatchRecord));
+  f.close();
+  return n == sizeof(PagerDispatchRecord);
+}

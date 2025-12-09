@@ -49,6 +49,11 @@ public:
   uint32_t getStorageUsedKb() const;
   uint32_t getStorageTotalKb() const;
 
+#ifdef PAGER_MODE
+  bool loadPagerDispatchRecord(struct PagerDispatchRecord& rec);
+  bool savePagerDispatchRecord(const struct PagerDispatchRecord& rec);
+#endif
+
 private:
   FILESYSTEM* _getContactsChannelsFS() const { if (_fsExtra) return _fsExtra; return _fs;};
 };

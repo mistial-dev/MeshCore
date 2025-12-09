@@ -1,7 +1,12 @@
 #pragma once
 
 #include <Utils.h>
+#ifdef UNIT_TEST
+class Stream;
+#include <cstring>
+#else
 #include <Stream.h>
+#endif
 
 namespace mesh {
 
@@ -85,3 +90,8 @@ public:
 
 }
 
+#ifdef UNIT_TEST
+inline mesh::Identity::Identity() { memset(pub_key, 0, sizeof(pub_key)); }
+inline mesh::Identity::Identity(const char* /*pub_hex*/) { memset(pub_key, 0, sizeof(pub_key)); }
+inline mesh::LocalIdentity::LocalIdentity() : Identity() {}
+#endif

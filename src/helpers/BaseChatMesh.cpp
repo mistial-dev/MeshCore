@@ -1,4 +1,5 @@
 #include <helpers/BaseChatMesh.h>
+#include <helpers/AckHash.h>
 #include <Utils.h>
 
 #ifndef SERVER_RESPONSE_DELAY
@@ -41,9 +42,9 @@ mesh::Packet* BaseChatMesh::createSelfAdvert(const char* name, double lat, doubl
 void BaseChatMesh::sendAckTo(const ContactInfo& dest, uint32_t ack_hash) {
   if (dest.out_path_len < 0) {
     mesh::Packet* ack = createAck(ack_hash);
-    if (ack) sendFloodScoped(dest, ack, TXT_ACK_DELAY);
+    if (ack) sendFloodScoped(dest, ack, TXT_ACK_DELAY + getAckDelayMillis(dest, false));
   } else {
-    uint32_t d = TXT_ACK_DELAY;
+    uint32_t d = TXT_ACK_DELAY + getAckDelayMillis(dest, true);
     if (getExtraAckTransmitCount() > 0) {
       mesh::Packet* a1 = createMultiAck(ack_hash, 1);
       if (a1) sendDirect(a1, dest.out_path, dest.out_path_len, d);
@@ -54,6 +55,12 @@ void BaseChatMesh::sendAckTo(const ContactInfo& dest, uint32_t ack_hash) {
     if (a2) sendDirect(a2, dest.out_path, dest.out_path_len, d);
   }
 }
+
+#ifdef UNIT_TEST
+uint32_t BaseChatMesh::computeAckHashForTest(const mesh::Identity& peer_id, const uint8_t* data, size_t len) {
+  return computeAckHash(peer_id, data, len);
+}
+#endif
 
 void BaseChatMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, uint32_t timestamp, const uint8_t* app_data, size_t app_data_len) {
   AdvertDataParser parser(app_data, app_data_len);
@@ -124,6 +131,15 @@ void BaseChatMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, 
   // update
   StrHelper::strncpy(from->name, parser.getName(), sizeof(from->name));
   from->type = parser.getType();
+#ifdef PAGER_MODE
+  bool is_dispatch = false;
+  if (parser.getType() == ADV_TYPE_ROOM) {
+#ifdef ADV_FEAT1_DISPATCH
+    if (parser.getFeat1() & ADV_FEAT1_DISPATCH) is_dispatch = true;
+#endif
+  }
+  setDispatchFlag(*from, is_dispatch);
+#endif
   if (parser.hasLatLon()) {
     from->gps_lat = parser.getIntLat();
     from->gps_lon = parser.getIntLon();
@@ -221,18 +237,19 @@ void BaseChatMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender
     memcpy(&sender_timestamp, data, 4);
     uint8_t reply_len = onContactRequest(from, sender_timestamp, &data[4], len - 4, temp_buf);
     if (reply_len > 0) {
+      uint32_t reply_delay = getRequestResponseDelayMillis(from, data[4]);
       if (packet->isRouteFlood()) {
         // let this sender know path TO here, so they can use sendDirect(), and ALSO encode the response
         mesh::Packet* path = createPathReturn(from.id, secret, packet->path, packet->path_len,
                                               PAYLOAD_TYPE_RESPONSE, temp_buf, reply_len);
-        if (path) sendFloodScoped(from, path, SERVER_RESPONSE_DELAY);
+        if (path) sendFloodScoped(from, path, SERVER_RESPONSE_DELAY + reply_delay);
       } else {
         mesh::Packet* reply = createDatagram(PAYLOAD_TYPE_RESPONSE, from.id, secret, temp_buf, reply_len);
         if (reply) {
           if (from.out_path_len >= 0) {  // we have an out_path, so send DIRECT
-            sendDirect(reply, from.out_path, from.out_path_len, SERVER_RESPONSE_DELAY);
+            sendDirect(reply, from.out_path, from.out_path_len, SERVER_RESPONSE_DELAY + reply_delay);
           } else {
-            sendFloodScoped(from, reply, SERVER_RESPONSE_DELAY);
+            sendFloodScoped(from, reply, SERVER_RESPONSE_DELAY + reply_delay);
           }
         }
       }
@@ -703,6 +720,9 @@ bool BaseChatMesh::addContact(const ContactInfo& contact) {
     auto dest = &contacts[num_contacts++];
     *dest = contact;
 
+#ifdef PAGER_MODE
+    dispatch_flags[num_contacts - 1] = false;
+#endif
     // calc the ECDH shared secret (just once for performance)
     self_id.calcSharedSecret(dest->shared_secret, contact.id);
 
@@ -722,8 +742,15 @@ bool BaseChatMesh::removeContact(ContactInfo& contact) {
   num_contacts--;
   while (idx < num_contacts) {
     contacts[idx] = contacts[idx + 1];
+#ifdef PAGER_MODE
+    dispatch_flags[idx] = dispatch_flags[idx + 1];
+#endif
     idx++;
   }
+#ifdef PAGER_MODE
+  // Keep the trailing slot clear so lookups don’t read stale dispatch flags.
+  dispatch_flags[num_contacts] = false;
+#endif
   return true;  // Success
 }
 
@@ -784,6 +811,29 @@ bool BaseChatMesh::setChannel(int idx, const ChannelDetails& src) {
 }
 int BaseChatMesh::findChannelIdx(const mesh::GroupChannel& ch) {
   return -1;  // not found
+}
+#endif
+
+#ifdef PAGER_MODE
+int BaseChatMesh::findContactIndex(const ContactInfo& contact) const {
+  for (int i = 0; i < num_contacts; i++) {
+    if (&contacts[i] == &contact) return i;
+    if (contacts[i].id.matches(contact.id)) return i;
+  }
+  return -1;
+}
+
+bool BaseChatMesh::isDispatchContact(const ContactInfo& contact) const {
+  int idx = findContactIndex(contact);
+  if (idx < 0 || idx >= num_contacts) return false;
+  return dispatch_flags[idx];
+}
+
+void BaseChatMesh::setDispatchFlag(const ContactInfo& contact, bool is_dispatch) {
+  int idx = findContactIndex(contact);
+  if (idx < 0 || idx >= MAX_CONTACTS) return;
+  // Cache capability observed in adverts; caller must ensure bounds against MAX_CONTACTS.
+  dispatch_flags[idx] = is_dispatch;
 }
 #endif
 

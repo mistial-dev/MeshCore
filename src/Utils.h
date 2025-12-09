@@ -1,7 +1,11 @@
 #pragma once
 
 #include <MeshCore.h>
+#ifdef UNIT_TEST
+class Stream;
+#else
 #include <Stream.h>
+#endif
 #include <string.h>
 
 namespace mesh {

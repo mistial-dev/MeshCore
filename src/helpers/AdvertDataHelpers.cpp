@@ -1,4 +1,9 @@
 #include <helpers/AdvertDataHelpers.h>
+#include <cstring>
+#include <cstdio>
+#ifndef UNIT_TEST
+#include <Arduino.h>
+#endif
 
   uint8_t AdvertDataBuilder::encodeTo(uint8_t app_data[]) {
     app_data[0] = _type;
@@ -58,8 +63,6 @@
     }
   }
 
-#include <Arduino.h>
-
 void AdvertTimeHelper::formatRelativeTimeDiff(char dest[], int32_t seconds_from_now, bool short_fmt) {
   const char *suffix;
   if (seconds_from_now < 0) {
@@ -70,17 +73,17 @@ void AdvertTimeHelper::formatRelativeTimeDiff(char dest[], int32_t seconds_from_
   }
 
   if (seconds_from_now < 60) {
-    sprintf(dest, "%d secs %s", seconds_from_now, suffix);
+    snprintf(dest, MAX_ADVERT_DATA_SIZE, "%d secs %s", seconds_from_now, suffix);
   } else {
     int32_t mins = seconds_from_now / 60;
     if (mins < 60) {
-      sprintf(dest, "%d mins %s", mins, suffix);
+      snprintf(dest, MAX_ADVERT_DATA_SIZE, "%d mins %s", mins, suffix);
     } else {
       int32_t hours = mins / 60;
       if (hours < 24) {
-        sprintf(dest, "%d hours %s", hours, suffix);
+        snprintf(dest, MAX_ADVERT_DATA_SIZE, "%d hours %s", hours, suffix);
       } else {
-        sprintf(dest, "%d days %s", hours / 24, suffix);
+        snprintf(dest, MAX_ADVERT_DATA_SIZE, "%d days %s", hours / 24, suffix);
       }
     }
   }

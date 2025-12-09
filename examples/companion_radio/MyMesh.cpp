@@ -2,6 +2,10 @@
 
 #include <Arduino.h> // needed for PlatformIO
 #include <Mesh.h>
+#if defined(PAGER_MODE)
+#include "PagerSlotHelper.h"
+#include "PagerMultipart.h"
+#endif
 
 #define CMD_APP_START                 1
 #define CMD_SEND_TXT_MSG              2
@@ -244,6 +248,33 @@ uint8_t MyMesh::getExtraAckTransmitCount() const {
   return _prefs.multi_acks;
 }
 
+uint32_t MyMesh::calcPagerSlotDelay() const {
+#if defined(PAGER_MODE) && defined(PIN_BUZZER)
+  if (!isPagerClient()) return 0;
+  return pagerSlotDelayMs(self_id.pub_key, pager_ack_slots, pager_ack_window_ms);
+#else
+  return 0;
+#endif
+}
+
+uint32_t MyMesh::getAckDelayMillis(const ContactInfo& dest, bool is_multi) const {
+#if defined(PAGER_MODE) && defined(PIN_BUZZER)
+  if (isPagerClient() && pager_dispatch_cache.isSet() && isDispatchMatch(dest)) {
+    return calcPagerSlotDelay();
+  }
+#endif
+  return 0;
+}
+
+uint32_t MyMesh::getRequestResponseDelayMillis(const ContactInfo& contact, uint8_t req_type) const {
+#if defined(PAGER_MODE) && defined(PIN_BUZZER)
+  if (isPagerClient() && pager_dispatch_cache.isSet() && isDispatchMatch(contact) && req_type == REQ_TYPE_GET_TELEMETRY_DATA) {
+    return calcPagerSlotDelay();
+  }
+#endif
+  return 0;
+}
+
 void MyMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
   if (_serial->isConnected() && len + 3 <= MAX_FRAME_SIZE) {
     int i = 0;
@@ -420,11 +451,27 @@ void MyMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pk
 void MyMesh::onMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
                            const char *text) {
   markConnectionActive(from); // in case this is from a server, and we have a connection
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0) && defined(PIN_BUZZER)
+  if (isDispatchMatch(from)) {
+    pager_last_dispatch_rx = _ms->getMillis();
+    const char* use_text = text;
+    auto mp = handlePagerMultipart(from, text, &use_text);
+    if (mp == PagerMultipartAssembler::Result::Waiting || mp == PagerMultipartAssembler::Result::Rejected) return;
+    PagerAlertLevel lvl = parsePagerPriority(use_text, PagerAlertLevel::D);
+    startPagerAlert(lvl);
+    text = use_text;
+  }
+#endif
   queueMessage(from, TXT_TYPE_PLAIN, pkt, sender_timestamp, NULL, 0, text);
 }
 
 void MyMesh::onCommandDataRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
                                const char *text) {
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+  if (!isDispatchMatch(from) || !hasConnectionTo(from.id.pub_key)) {
+    return; // ignore CLI from non-dispatch or when not connected
+  }
+#endif
   markConnectionActive(from); // in case this is from a server, and we have a connection
   queueMessage(from, TXT_TYPE_CLI_DATA, pkt, sender_timestamp, NULL, 0, text);
 }
@@ -439,6 +486,22 @@ void MyMesh::onSignedMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uin
 
 void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packet *pkt, uint32_t timestamp,
                                   const char *text) {
+  // Pager-mode: channel traffic from dispatch still triggers alert
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0) && defined(PIN_BUZZER)
+  // channel messages do not carry sender identity directly; rely on active connection only
+  if (pager_dispatch_cache.isSet() && hasConnectionTo(pager_dispatch_cache.dispatch_pub_key)) {
+    pager_last_dispatch_rx = _ms->getMillis();
+    ContactInfo* dispatch_contact = lookupContactByPubKey(pager_dispatch_cache.dispatch_pub_key, 6);
+    const char* use_text = text;
+    if (dispatch_contact) {
+      auto mp = handlePagerMultipart(*dispatch_contact, text, &use_text);
+      if (mp == PagerMultipartAssembler::Result::Waiting || mp == PagerMultipartAssembler::Result::Rejected) return;
+      text = use_text;
+    }
+    PagerAlertLevel lvl = parsePagerPriority(text, PagerAlertLevel::D);
+    startPagerAlert(lvl);
+  }
+#endif
   int i = 0;
   if (app_target_ver >= 3) {
     out_frame[i++] = RESP_CODE_CHANNEL_MSG_RECV_V3;
@@ -487,6 +550,11 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
 uint8_t MyMesh::onContactRequest(const ContactInfo &contact, uint32_t sender_timestamp, const uint8_t *data,
                                  uint8_t len, uint8_t *reply) {
   if (data[0] == REQ_TYPE_GET_TELEMETRY_DATA) {
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+    if (!isDispatchMatch(contact) || !hasConnectionTo(contact.id.pub_key)) {
+      return 0; // ignore telemetry requests unless from dispatch while connected
+    }
+#endif
     uint8_t permissions = 0;
     uint8_t cp = contact.flags >> 1; // LSB used as 'favourite' bit (so only use upper bits)
 
@@ -561,6 +629,19 @@ void MyMesh::onContactResponse(const ContactInfo &contact, const uint8_t *data, 
       memcpy(&out_frame[i], contact.id.pub_key, 6);
       i += 6; // pub_key_prefix
     }
+#ifdef PAGER_MODE
+    if (out_frame[0] == PUSH_CODE_LOGIN_SUCCESS && isDispatchMatch(contact)) {
+      pager_dispatch_cache.version = PagerDispatchRecord::kVersion;
+      memcpy(pager_dispatch_cache.dispatch_pub_key, contact.id.pub_key, sizeof(pager_dispatch_cache.dispatch_pub_key));
+      StrHelper::strzcpy(pager_dispatch_cache.dispatch_name, contact.name, sizeof(pager_dispatch_cache.dispatch_name));
+      pager_dispatch_cache.last_join_time = getRTCClock()->getCurrentTime();
+      _store->savePagerDispatchRecord(pager_dispatch_cache);
+      pager_connected = true;
+      pager_last_dispatch_rx = _ms->getMillis();
+      pager_disconnect_alerting = false;
+      pager_auto_login_pending = false;
+    }
+#endif
     _serial->writeFrame(out_frame, i);
   } else if (len > 4 && // check for status response
              pending_status &&
@@ -729,6 +810,10 @@ MyMesh::MyMesh(mesh::Radio &radio, mesh::RNG &rng, mesh::RTCClock &rtc, SimpleMe
   dirty_contacts_expiry = 0;
   memset(advert_paths, 0, sizeof(advert_paths));
   memset(send_scope.key, 0, sizeof(send_scope.key));
+#ifdef PAGER_MODE
+  pager_dispatch_cache.clear();
+  pager_connected = false;
+#endif
 
   // defaults
   memset(&_prefs, 0, sizeof(_prefs));
@@ -767,6 +852,32 @@ void MyMesh::begin(bool has_display) {
 
   // load persisted prefs
   _store->loadPrefs(_prefs, sensors.node_lat, sensors.node_lon);
+#ifdef PAGER_MODE
+  _store->loadPagerDispatchRecord(pager_dispatch_cache);
+  pager_connected = false;
+  pager_auto_login_pending = false;
+#if defined(PIN_BUZZER)
+  pager_buzzer_ptr = NULL;
+  pager_buzzer_owned = false;
+  pager_led_next = 0;
+  pager_led_state = false;
+  pager_disconnect_alerting = false;
+  pager_nack_pending = false;
+  pager_next_disconnect_check = 0;
+  pager_last_dispatch_rx = 0;
+  pager_next_login_attempt = 0;
+  if (_ui) {
+    pager_buzzer_ptr = _ui->getBuzzer();
+  }
+  if (pager_buzzer_ptr == NULL) {
+    pager_buzzer_ptr = &pager_buzzer_storage;
+    pager_buzzer_owned = true;
+    pager_buzzer_storage.begin();
+    pager_buzzer_storage.quiet(_prefs.buzzer_quiet);
+  }
+  if (pager_buzzer_ptr) pager_alert.begin(pager_buzzer_ptr);
+#endif
+#endif
 
   // sanitise bad pref values
   _prefs.rx_delay_base = constrain(_prefs.rx_delay_base, 0, 20.0f);
@@ -795,6 +906,13 @@ void MyMesh::begin(bool has_display) {
 #else
   _active_ble_pin = 0;
 #endif
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+#if defined(NO_BLE_FOR_PAGER)
+  _active_ble_pin = 0; // force BLE off for pager clients (USB-only)
+#elif !defined(PAGER_ALLOW_BLE)
+  _active_ble_pin = 0; // default pager build disables BLE unless explicitly allowed
+#endif
+#endif
 
   resetContacts();
   _store->loadContacts(this);
@@ -804,6 +922,42 @@ void MyMesh::begin(bool has_display) {
   radio_set_params(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
   radio_set_tx_power(_prefs.tx_power_dbm);
 }
+
+#ifdef PAGER_MODE
+bool MyMesh::isPagerClient() const {
+#ifndef DISPATCH_NODE
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool MyMesh::isDispatchMatch(const ContactInfo& contact) const {
+  if (!isDispatchContact(contact)) return false;
+  if (!pager_dispatch_cache.isSet()) return true;
+  return memcmp(contact.id.pub_key, pager_dispatch_cache.dispatch_pub_key, PUB_KEY_SIZE) == 0;
+}
+
+bool MyMesh::requireDispatchTarget(const ContactInfo* contact) {
+  if (!isPagerClient()) return true;
+  if (contact && isDispatchMatch(*contact)) return true;
+  writeDisabledFrame();
+#ifdef DISPLAY_CLASS
+  if (_ui) _ui->notify(UIEventType::contactMessage);
+#endif
+  return false;
+}
+
+bool MyMesh::requireDispatchConnection(uint8_t cmd) {
+  if (!isPagerClient()) return true;
+  if (pager_connected && pager_dispatch_cache.isSet() && hasConnectionTo(pager_dispatch_cache.dispatch_pub_key)) return true;
+  writeDisabledFrame();
+#ifdef DISPLAY_CLASS
+  if (_ui) _ui->notify(UIEventType::contactMessage);
+#endif
+  return false;
+}
+#endif
 
 const char *MyMesh::getNodeName() {
   return _prefs.node_name;
@@ -882,6 +1036,9 @@ void MyMesh::handleCmdFrame(size_t len) {
     i += tlen;
     _serial->writeFrame(out_frame, i);
   } else if (cmd_frame[0] == CMD_SEND_TXT_MSG && len >= 14) {
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+    if (!requireDispatchConnection(cmd_frame[0])) return;
+#endif
     int i = 1;
     uint8_t txt_type = cmd_frame[i++];
     uint8_t attempt = cmd_frame[i++];
@@ -891,6 +1048,12 @@ void MyMesh::handleCmdFrame(size_t len) {
     uint8_t *pub_key_prefix = &cmd_frame[i];
     i += 6;
     ContactInfo *recipient = lookupContactByPubKey(pub_key_prefix, 6);
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+    if (recipient && !isDispatchMatch(*recipient)) {
+      writeDisabledFrame();
+      return;
+    }
+#endif
     if (recipient && (txt_type == TXT_TYPE_PLAIN || txt_type == TXT_TYPE_CLI_DATA)) {
       char *text = (char *)&cmd_frame[i];
       int tlen = len - i;
@@ -927,6 +1090,9 @@ void MyMesh::handleCmdFrame(size_t len) {
                         : ERR_CODE_UNSUPPORTED_CMD); // unknown recipient, or unsuported TXT_TYPE_*
     }
   } else if (cmd_frame[0] == CMD_SEND_CHANNEL_TXT_MSG) { // send GroupChannel msg
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+    if (!requireDispatchConnection(cmd_frame[0])) return;
+#endif
     int i = 1;
     uint8_t txt_type = cmd_frame[i++]; // should be TXT_TYPE_PLAIN
     uint8_t channel_idx = cmd_frame[i++];
@@ -1244,6 +1410,9 @@ void MyMesh::handleCmdFrame(size_t len) {
     writeDisabledFrame();
 #endif
   } else if (cmd_frame[0] == CMD_SEND_RAW_DATA && len >= 6) {
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+    if (!requireDispatchConnection(cmd_frame[0])) return;
+#endif
     int i = 1;
     int8_t path_len = cmd_frame[i++];
     if (path_len >= 0 && i + path_len + 4 <= len) { // minimum 4 byte payload
@@ -1264,6 +1433,18 @@ void MyMesh::handleCmdFrame(size_t len) {
     ContactInfo *recipient = lookupContactByPubKey(pub_key, PUB_KEY_SIZE);
     char *password = (char *)&cmd_frame[1 + PUB_KEY_SIZE];
     cmd_frame[len] = 0; // ensure null terminator in password
+#ifdef PAGER_MODE
+#ifndef DISPATCH_NODE
+    if (recipient && !isDispatchMatch(*recipient)) {
+      writeDisabledFrame();
+      return;
+    }
+    if (pager_dispatch_cache.isSet() && recipient && memcmp(pub_key, pager_dispatch_cache.dispatch_pub_key, PUB_KEY_SIZE) != 0) {
+      writeDisabledFrame();
+      return;
+    }
+#endif
+#endif
     if (recipient) {
       uint32_t est_timeout;
       int result = sendLogin(*recipient, password, est_timeout);
@@ -1282,8 +1463,17 @@ void MyMesh::handleCmdFrame(size_t len) {
       writeErrFrame(ERR_CODE_NOT_FOUND); // contact not found
     }
   } else if (cmd_frame[0] == CMD_SEND_STATUS_REQ && len >= 1 + PUB_KEY_SIZE) {
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+    if (!requireDispatchConnection(cmd_frame[0])) return;
+#endif
     uint8_t *pub_key = &cmd_frame[1];
     ContactInfo *recipient = lookupContactByPubKey(pub_key, PUB_KEY_SIZE);
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+    if (recipient && !isDispatchMatch(*recipient)) {
+      writeDisabledFrame();
+      return;
+    }
+#endif
     if (recipient) {
       uint32_t tag, est_timeout;
       int result = sendRequest(*recipient, REQ_TYPE_GET_STATUS, tag, est_timeout);
@@ -1303,6 +1493,9 @@ void MyMesh::handleCmdFrame(size_t len) {
       writeErrFrame(ERR_CODE_NOT_FOUND); // contact not found
     }
   } else if (cmd_frame[0] == CMD_SEND_PATH_DISCOVERY_REQ && cmd_frame[1] == 0 && len >= 2 + PUB_KEY_SIZE) {
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+    if (!requireDispatchConnection(cmd_frame[0])) return;
+#endif
     uint8_t *pub_key = &cmd_frame[2];
     ContactInfo *recipient = lookupContactByPubKey(pub_key, PUB_KEY_SIZE);
     if (recipient) {
@@ -1332,8 +1525,17 @@ void MyMesh::handleCmdFrame(size_t len) {
       writeErrFrame(ERR_CODE_NOT_FOUND); // contact not found
     }
   } else if (cmd_frame[0] == CMD_SEND_TELEMETRY_REQ && len >= 4 + PUB_KEY_SIZE) {  // can deprecate, in favour of CMD_SEND_BINARY_REQ
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+    if (!requireDispatchConnection(cmd_frame[0])) return;
+#endif
     uint8_t *pub_key = &cmd_frame[4];
     ContactInfo *recipient = lookupContactByPubKey(pub_key, PUB_KEY_SIZE);
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+    if (recipient && !isDispatchMatch(*recipient)) {
+      writeDisabledFrame();
+      return;
+    }
+#endif
     if (recipient) {
       uint32_t tag, est_timeout;
       int result = sendRequest(*recipient, REQ_TYPE_GET_TELEMETRY_DATA, tag, est_timeout);
@@ -1352,6 +1554,9 @@ void MyMesh::handleCmdFrame(size_t len) {
       writeErrFrame(ERR_CODE_NOT_FOUND); // contact not found
     }
   } else if (cmd_frame[0] == CMD_SEND_TELEMETRY_REQ && len == 4) {  // 'self' telemetry request
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+    if (!requireDispatchConnection(cmd_frame[0])) return;
+#endif
     telemetry.reset();
     telemetry.addVoltage(TELEM_CHANNEL_SELF, (float)board.getBattMilliVolts() / 1000.0f);
     // query other sensors -- target specific
@@ -1367,8 +1572,17 @@ void MyMesh::handleCmdFrame(size_t len) {
     i += tlen;
     _serial->writeFrame(out_frame, i);
   } else if (cmd_frame[0] == CMD_SEND_BINARY_REQ && len >= 2 + PUB_KEY_SIZE) {
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+    if (!requireDispatchConnection(cmd_frame[0])) return;
+#endif
     uint8_t *pub_key = &cmd_frame[1];
     ContactInfo *recipient = lookupContactByPubKey(pub_key, PUB_KEY_SIZE);
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+    if (recipient && !isDispatchMatch(*recipient)) {
+      writeDisabledFrame();
+      return;
+    }
+#endif
     if (recipient) {
       uint8_t *req_data = &cmd_frame[1 + PUB_KEY_SIZE];
       uint32_t tag, est_timeout;
@@ -1850,6 +2064,72 @@ void MyMesh::loop() {
 #ifdef DISPLAY_CLASS
   if (_ui) _ui->setHasConnection(_serial->isConnected());
 #endif
+
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0)
+  if (pager_connected && pager_dispatch_cache.isSet() && !hasConnectionTo(pager_dispatch_cache.dispatch_pub_key)) {
+    pager_connected = false;
+  }
+#endif
+#if defined(PAGER_MODE) && defined(PIN_BUZZER)
+  pager_alert.loop();
+
+#if defined(LED_PIN)
+  if (isPagerClient()) {
+    bool connected = pager_connected && pager_dispatch_cache.isSet() && hasConnectionTo(pager_dispatch_cache.dispatch_pub_key);
+    handlePagerLED(connected);
+  }
+#endif
+
+#if !defined(DISPATCH_NODE) || DISPATCH_NODE==0
+  if (isPagerClient() && pager_dispatch_cache.isSet()) {
+    if (pager_next_disconnect_check == 0) {
+      pager_next_disconnect_check = futureMillis(60000);
+      pager_last_dispatch_rx = _ms->getMillis();
+      pager_auto_login_pending = false;
+    }
+    if (millisHasNowPassed(pager_next_disconnect_check)) {
+      pager_next_disconnect_check = futureMillis(60000);
+      bool connected_now = pager_connected && hasConnectionTo(pager_dispatch_cache.dispatch_pub_key);
+      bool timed_out = false;
+      if (pager_last_dispatch_rx != 0) {
+        unsigned long elapsed = _ms->getMillis() - pager_last_dispatch_rx;
+        timed_out = elapsed > 60000;
+      }
+      if ((!connected_now || timed_out) && !pager_disconnect_alerting) {
+        startPagerAlert(PagerAlertLevel::C);
+        pager_disconnect_alerting = true;
+        pager_auto_login_pending = true;
+      } else if (connected_now) {
+        pager_disconnect_alerting = false;
+        pager_auto_login_pending = false;
+      } else {
+        // if we stay disconnected, allow another attempt after backoff
+        pager_auto_login_pending = true;
+      }
+    }
+    checkPagerMultipartTimeout();
+    if (pager_auto_login_pending && millisHasNowPassed(pager_next_login_attempt)) {
+      // backoff cap: every 5 minutes after two failed attempts
+      if (pager_next_login_attempt == 0) {
+        pager_next_login_attempt = futureMillis(60000);
+      } else {
+        pager_next_login_attempt = futureMillis(300000);
+      }
+      ContactInfo* dispatch_contact = lookupContactByPubKey(pager_dispatch_cache.dispatch_pub_key, 6);
+      if (dispatch_contact) {
+        uint32_t est_timeout;
+        // Attempt passwordless login; dispatcher may remember the node and allow it
+        int result = sendLogin(*dispatch_contact, "", est_timeout);
+        if (result != MSG_SEND_FAILED) {
+          memcpy(&pending_login, dispatch_contact->id.pub_key, 4);
+        } else {
+          pager_auto_login_pending = false; // give up until next disconnect check
+        }
+      }
+    }
+  }
+#endif
+#endif
 }
 
 bool MyMesh::advert() {
@@ -1866,3 +2146,60 @@ bool MyMesh::advert() {
     return false;
   }
 }
+
+#if defined(PAGER_MODE) && defined(PIN_BUZZER) && defined(LED_PIN)
+void MyMesh::handlePagerLED(bool connected) {
+  // Keep LED quiet when connected and no alert; otherwise blink at severity-dependent rate.
+  if (!pager_alert.isActive() && connected) {
+    digitalWrite(LED_PIN, LOW);
+    pager_led_state = false;
+    pager_led_next = futureMillis(1500);
+    return;
+  }
+
+  unsigned long interval = pager_alert.isActive() ? 250 : 800;
+  if (millisHasNowPassed(pager_led_next)) {
+    pager_led_next = futureMillis(interval);
+    pager_led_state = !pager_led_state;
+    digitalWrite(LED_PIN, pager_led_state ? HIGH : LOW);
+  }
+}
+#endif
+
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0) && defined(PIN_BUZZER)
+PagerMultipartAssembler::Result MyMesh::handlePagerMultipart(const ContactInfo& from, const char* text, const char** out_text) {
+  if (out_text) *out_text = text;
+  if (!isPagerClient() || !pager_dispatch_cache.isSet() || !isDispatchMatch(from) || text == nullptr) {
+    return PagerMultipartAssembler::Result::Single;
+  }
+  auto now_ms = _ms->getMillis();
+  auto res = pager_multipart.ingest(from.id.pub_key, text, now_ms, pager_combined_msg, sizeof(pager_combined_msg));
+  if (res == PagerMultipartAssembler::Result::Complete) {
+    if (out_text) *out_text = pager_combined_msg;
+  } else if (res == PagerMultipartAssembler::Result::Rejected) {
+    // Rejects (bad counter/too many parts) are surfaced to dispatch so the sender can retry.
+    uint8_t missing = pager_multipart.missingMask();
+    ContactInfo* dispatch_contact = lookupContactByPubKey(pager_dispatch_cache.dispatch_pub_key, 6);
+    if (dispatch_contact && hasConnectionTo(dispatch_contact->id.pub_key)) {
+      snprintf(pager_combined_msg, sizeof(pager_combined_msg), "NACK page rejected missing_mask=%02X", missing);
+      uint32_t est;
+      sendCommandData(*dispatch_contact, now_ms / 1000, 0, pager_combined_msg, est);
+    }
+    pager_multipart.reset();
+  }
+  return res;
+}
+
+void MyMesh::checkPagerMultipartTimeout() {
+  if (!isPagerClient() || !pager_multipart.hasTimedOut(_ms->getMillis())) return;
+  uint8_t missing = pager_multipart.missingMask();
+  ContactInfo* dispatch_contact = lookupContactByPubKey(pager_dispatch_cache.dispatch_pub_key, 6);
+  if (dispatch_contact && hasConnectionTo(dispatch_contact->id.pub_key)) {
+    // Timeouts are treated as NACKs so dispatch can resend the whole page.
+    snprintf(pager_combined_msg, sizeof(pager_combined_msg), "NACK page timeout missing_mask=%02X", missing);
+    uint32_t est;
+    sendCommandData(*dispatch_contact, _ms->getMillis() / 1000, 0, pager_combined_msg, est);
+  }
+  pager_multipart.reset();
+}
+#endif

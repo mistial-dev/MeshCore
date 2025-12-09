@@ -11,6 +11,10 @@
 #define ADV_TYPE_SENSOR       4
 //FUTURE: 5..15
 
+#ifdef PAGER_MODE
+#define ADV_FEAT1_DISPATCH    0x0001  // room advert indicates dispatch/pager capability
+#endif
+
 #define ADV_LATLON_MASK       0x10
 #define ADV_FEAT1_MASK        0x20   // FUTURE
 #define ADV_FEAT2_MASK        0x40   // FUTURE
@@ -31,6 +35,8 @@ public:
 
   void setFeat1(uint16_t extra) { _extra1 = extra; }
   void setFeat2(uint16_t extra) { _extra2 = extra; }
+  uint16_t getFeat1() const { return _extra1; }
+  uint16_t getFeat2() const { return _extra2; }
 
   /**
    * \brief  encode the given advertisement data.

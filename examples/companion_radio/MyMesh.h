@@ -25,6 +25,9 @@
 
 #include "DataStore.h"
 #include "NodePrefs.h"
+#ifdef PAGER_MODE
+#include "PagerDispatchRecord.h"
+#endif
 
 #include <RTClib.h>
 #include <helpers/ArduinoHelpers.h>
@@ -33,6 +36,11 @@
 #include <helpers/SimpleMeshTables.h>
 #include <helpers/StaticPoolPacketManager.h>
 #include <target.h>
+#if defined(PAGER_MODE) && defined(PIN_BUZZER)
+#include "PagerAlert.h"
+#include "PagerHelpers.h"
+#include "PagerMultipart.h"
+#endif
 
 /* ---------------------------------- CONFIGURATION ------------------------------------- */
 
@@ -107,6 +115,8 @@ protected:
   int getInterferenceThreshold() const override;
   int calcRxDelay(float score, uint32_t air_time) const override;
   uint8_t getExtraAckTransmitCount() const override;
+  uint32_t getAckDelayMillis(const ContactInfo& dest, bool is_multi) const override;
+  uint32_t getRequestResponseDelayMillis(const ContactInfo& contact, uint8_t req_type) const override;
   bool filterRecvFloodPacket(mesh::Packet* packet) override;
 
   void sendFloodScoped(const ContactInfo& recipient, mesh::Packet* pkt, uint32_t delay_millis=0) override;
@@ -153,6 +163,9 @@ protected:
   }
 
 public:
+#if defined(PAGER_MODE) && (!defined(DISPATCH_NODE) || DISPATCH_NODE==0) && defined(PIN_BUZZER)
+  void cancelPagerAlert() { stopPagerAlert(); }
+#endif
   void savePrefs() { _store->savePrefs(_prefs, sensors.node_lat, sensors.node_lon); }
 
 private:
@@ -192,6 +205,42 @@ private:
   uint32_t _active_ble_pin;
   bool _iter_started;
   bool _cli_rescue;
+#ifdef PAGER_MODE
+  PagerDispatchRecord pager_dispatch_cache;
+  bool pager_connected;
+  bool pager_auto_login_pending;
+  bool isPagerClient() const;
+  bool isDispatchMatch(const ContactInfo& contact) const;
+  bool requireDispatchConnection(uint8_t cmd);
+  bool requireDispatchTarget(const ContactInfo* contact);
+#if defined(PIN_BUZZER)
+  genericBuzzer* pager_buzzer_ptr;
+  bool pager_buzzer_owned;
+  genericBuzzer pager_buzzer_storage;
+  PagerAlert pager_alert;
+  PagerMultipartAssembler pager_multipart;
+  char pager_combined_msg[512];
+  uint8_t pager_ack_slots = 8;
+  uint16_t pager_ack_window_ms = 2400;
+  unsigned long pager_next_disconnect_check;
+  uint32_t pager_last_dispatch_rx;
+  unsigned long pager_next_login_attempt;
+  unsigned long pager_led_next;
+  bool pager_led_state;
+  bool pager_disconnect_alerting;
+  bool pager_nack_pending;
+  void startPagerAlert(PagerAlertLevel lvl) {
+    if (pager_buzzer_ptr) pager_alert.start(lvl);
+  }
+  void stopPagerAlert() {
+    if (pager_buzzer_ptr) pager_alert.stop();
+  }
+  void handlePagerLED(bool connected);
+  uint32_t calcPagerSlotDelay() const;
+  PagerMultipartAssembler::Result handlePagerMultipart(const ContactInfo& from, const char* text, const char** out_text);
+  void checkPagerMultipartTimeout();
+#endif
+#endif
   char cli_command[80];
   uint8_t app_target_ver;
   uint8_t *sign_data;

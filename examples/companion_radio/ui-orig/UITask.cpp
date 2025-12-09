@@ -348,6 +348,9 @@ void UITask::handleButtonAnyPress() {
     }
     _auto_off = millis() + AUTO_OFF_MILLIS;   // extend auto-off timer
   }
+#if defined(PAGER_MODE) && defined(PIN_BUZZER)
+  the_mesh.cancelPagerAlert();
+#endif
 }
 
 void UITask::handleButtonShortPress() {
