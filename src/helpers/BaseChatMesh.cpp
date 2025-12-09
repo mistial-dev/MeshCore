@@ -139,6 +139,13 @@ void BaseChatMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, 
 #endif
   }
   setDispatchFlag(*from, is_dispatch);
+#if !defined(DISPATCH_NODE) || DISPATCH_NODE==0
+  if (!is_dispatch) {
+    // Pager builds only keep dispatch contacts; drop others to avoid presenting non-dispatch rooms.
+    removeContact(*from);
+    return;
+  }
+#endif
 #endif
   if (parser.hasLatLon()) {
     from->gps_lat = parser.getIntLat();

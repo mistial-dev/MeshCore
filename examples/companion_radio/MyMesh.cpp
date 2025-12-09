@@ -433,14 +433,18 @@ void MyMesh::onMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t 
                            const char *text) {
   markConnectionActive(from); // in case this is from a server, and we have a connection
   const char* use_text = text;
-  pagerPreprocessIncoming(from, use_text, false);
+#ifdef PAGER_MODE
+  if (!pagerPreprocessIncoming(from, use_text, false)) return;
+#endif
   text = use_text;
   queueMessage(from, TXT_TYPE_PLAIN, pkt, sender_timestamp, NULL, 0, text);
 }
 
 void MyMesh::onCommandDataRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
                                const char *text) {
+#ifdef PAGER_MODE
   if (!pagerShouldAcceptCLI(from)) return;
+#endif
   markConnectionActive(from); // in case this is from a server, and we have a connection
   queueMessage(from, TXT_TYPE_CLI_DATA, pkt, sender_timestamp, NULL, 0, text);
 }
@@ -456,7 +460,9 @@ void MyMesh::onSignedMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uin
 void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packet *pkt, uint32_t timestamp,
                                   const char *text) {
   const char* use_text = text;
-  pagerPreprocessChannel(use_text);
+#ifdef PAGER_MODE
+  if (!pagerPreprocessChannel(use_text)) return;
+#endif
   text = use_text;
   int i = 0;
   if (app_target_ver >= 3) {
@@ -506,9 +512,11 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
 uint8_t MyMesh::onContactRequest(const ContactInfo &contact, uint32_t sender_timestamp, const uint8_t *data,
                                  uint8_t len, uint8_t *reply) {
   if (data[0] == REQ_TYPE_GET_TELEMETRY_DATA) {
+#ifdef PAGER_MODE
     if (!pagerAllowTelemetry(contact)) {
       return 0; // ignore telemetry requests unless from dispatch while connected
     }
+#endif
     uint8_t permissions = 0;
     uint8_t cp = contact.flags >> 1; // LSB used as 'favourite' bit (so only use upper bits)
 

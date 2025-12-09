@@ -633,6 +633,8 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   next_push = 0;
   memset(posts, 0, sizeof(posts));
   _num_posted = _num_post_pushes = 0;
+  next_telem_poll = 0;
+  next_telem_idx = 0;
 }
 
 void MyMesh::begin(FILESYSTEM *fs) {
@@ -867,6 +869,10 @@ void MyMesh::loop() {
 
     updateAdvertTimer(); // schedule next local advert
   }
+
+#ifdef PAGER_MODE
+  pollTelemetryRoundRobin();
+#endif
 
   if (set_radio_at && millisHasNowPassed(set_radio_at)) { // apply pending (temporary) radio params
     set_radio_at = 0;                                     // clear timer
