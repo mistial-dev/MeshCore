@@ -1,6 +1,7 @@
 #include "MyMesh.h"
 
-#ifdef PAGER_MODE
+// Telemetry/heartbeat logic for the room server (non-dispatch). Dispatch-specific
+// roster/CLI lives in examples/dispatch_server.
 
 bool MyMesh::sendTelemetryRequest(ClientInfo* client) {
   if (client == nullptr) return false;
@@ -56,5 +57,3 @@ void MyMesh::pollTelemetryRoundRobin() {
 
   next_telem_poll = futureMillis(sent ? DISPATCH_HEARTBEAT_INTERVAL_MS : DISPATCH_HEARTBEAT_INTERVAL_MS / 4);
 }
-
-#endif // PAGER_MODE

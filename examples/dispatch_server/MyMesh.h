@@ -22,6 +22,9 @@
 #include <helpers/ClientACL.h>
 #include <RTClib.h>
 #include <target.h>
+#ifdef PAGER_MODE
+#include "../companion_radio/PagerRoster.h"
+#endif
 
 /* ------------------------------ Config -------------------------------- */
 
@@ -50,7 +53,7 @@
 #endif
 
 #ifndef ADVERT_NAME
-  #define  ADVERT_NAME   "Test BBS"
+  #define  ADVERT_NAME   "t1000-e"
 #endif
 #ifndef ADVERT_LAT
   #define  ADVERT_LAT  0.0
@@ -78,6 +81,12 @@
   // Heartbeat/telemetry cadence. Keep airtime overhead low: with ~100ms airtime per poll, 60s is ~0.17% duty.
   #define DISPATCH_HEARTBEAT_INTERVAL_MS 60000
 #endif
+
+// Request codes shared with the dispatch loop.
+#define REQ_TYPE_GET_STATUS         0x01 // same as _GET_STATS
+#define REQ_TYPE_KEEP_ALIVE         0x02
+#define REQ_TYPE_GET_TELEMETRY_DATA 0x03
+#define REQ_TYPE_GET_ACCESS_LIST    0x05
 
 #define FIRMWARE_ROLE "room_server"
 
@@ -117,6 +126,11 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   unsigned long next_telem_poll;
   int next_telem_idx;
   bool audit_enabled;
+#ifdef PAGER_MODE
+  static constexpr int kMaxPagerRoster = 128;
+  PagerRosterEntry pager_roster[kMaxPagerRoster];
+  int pager_roster_size;
+#endif
 
   void addPost(ClientInfo* client, const char* postData);
   void pushPostToClient(ClientInfo* client, PostInfo& post);
@@ -127,6 +141,21 @@ class MyMesh : public mesh::Mesh, public CommonCLICallbacks {
   int handleRequest(ClientInfo* sender, uint32_t sender_timestamp, uint8_t* payload, size_t payload_len);
   void pollTelemetryRoundRobin();
   bool sendTelemetryRequest(ClientInfo* client);
+#ifdef PAGER_MODE
+  void loadPagerRoster();
+  void savePagerRoster();
+  PagerRosterEntry* findRosterByPub(const uint8_t* pub);
+  PagerRosterEntry* findRosterById(uint16_t id);
+  uint16_t allocatePagerId() const;
+  bool sendPagerText(ClientInfo* client, const char* text);
+  bool sendPagerNDID(ClientInfo* client, uint16_t id, uint8_t groups, bool evict);
+  bool sendPagerOTAR(ClientInfo* client, const char* password);
+  ClientInfo* findClientByPub(const uint8_t* pub);
+  bool handlePagerCLI(const char* cmd, char* reply);
+  void maybeMarkPagerSeen(const ClientInfo* client);
+  void ensureDispatchPrefix();
+#endif
+  bool sendServerNotice(ClientInfo* client, const char* text);
 
 protected:
   float getAirtimeBudgetFactor() const override {

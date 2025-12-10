@@ -431,12 +431,12 @@ void MyMesh::sendFloodScoped(const mesh::GroupChannel& channel, mesh::Packet* pk
 
 void MyMesh::onMessageRecv(const ContactInfo &from, mesh::Packet *pkt, uint32_t sender_timestamp,
                            const char *text) {
-  markConnectionActive(from); // in case this is from a server, and we have a connection
   const char* use_text = text;
 #ifdef PAGER_MODE
   if (!pagerPreprocessIncoming(from, use_text, false)) return;
-#endif
   text = use_text;
+#endif
+  markConnectionActive(from); // in case this is from a server, and we have a connection
   queueMessage(from, TXT_TYPE_PLAIN, pkt, sender_timestamp, NULL, 0, text);
 }
 
@@ -462,8 +462,8 @@ void MyMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh::Packe
   const char* use_text = text;
 #ifdef PAGER_MODE
   if (!pagerPreprocessChannel(use_text)) return;
-#endif
   text = use_text;
+#endif
   int i = 0;
   if (app_target_ver >= 3) {
     out_frame[i++] = RESP_CODE_CHANNEL_MSG_RECV_V3;
@@ -814,7 +814,6 @@ void MyMesh::begin(bool has_display) {
   pager_led_next = 0;
   pager_led_state = false;
   pager_disconnect_alerting = false;
-  pager_nack_pending = false;
   pager_next_disconnect_check = 0;
   pager_last_dispatch_rx = 0;
   pager_next_login_attempt = 0;

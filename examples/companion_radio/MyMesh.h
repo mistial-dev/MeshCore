@@ -39,7 +39,6 @@
 #if defined(PAGER_MODE) && defined(PIN_BUZZER)
 #include "PagerAlert.h"
 #include "PagerHelpers.h"
-#include "PagerMultipart.h"
 #endif
 
 /* ---------------------------------- CONFIGURATION ------------------------------------- */
@@ -224,17 +223,14 @@ private:
   bool pager_buzzer_owned;
   genericBuzzer pager_buzzer_storage;
   PagerAlert pager_alert;
-  PagerMultipartAssembler pager_multipart;
-  char pager_combined_msg[512];
   uint8_t pager_ack_slots = 8;
-  uint16_t pager_ack_window_ms = 2400;
+  uint16_t pager_ack_window_ms = 500; // tighter window for ACKs to reduce channel hold
   unsigned long pager_next_disconnect_check;
   uint32_t pager_last_dispatch_rx;
   unsigned long pager_next_login_attempt;
   unsigned long pager_led_next;
   bool pager_led_state;
   bool pager_disconnect_alerting;
-  bool pager_nack_pending;
   void startPagerAlert(PagerAlertLevel lvl) {
     if (pager_buzzer_ptr) pager_alert.start(lvl);
   }
@@ -243,8 +239,6 @@ private:
   }
   void handlePagerLED(bool connected);
   uint32_t calcPagerSlotDelay() const;
-  PagerMultipartAssembler::Result handlePagerMultipart(const ContactInfo& from, const char* text, const char** out_text);
-  void checkPagerMultipartTimeout();
 #endif
 #endif
   char cli_command[80];

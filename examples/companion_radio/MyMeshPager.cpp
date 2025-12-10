@@ -1,5 +1,4 @@
 #include "MyMesh.h"
-#include "PagerMultipart.h"
 #include "PagerSlotHelper.h"
 
 #ifdef PAGER_MODE
@@ -48,9 +47,9 @@ uint32_t MyMesh::getAckDelayMillis(const ContactInfo& dest, bool is_multi) const
 }
 
 uint32_t MyMesh::getRequestResponseDelayMillis(const ContactInfo& contact, uint8_t req_type) const {
-  if (isPagerClient() && pager_dispatch_cache.isSet() && isDispatchMatch(contact) && req_type == REQ_TYPE_GET_TELEMETRY_DATA) {
-    return calcPagerSlotDelay();
-  }
+  (void)contact;
+  (void)req_type;
+  // Telemetry replies are polled one-at-a-time; no added delay needed.
   return 0;
 }
 
@@ -80,10 +79,8 @@ bool MyMesh::pagerAllowTelemetry(const ContactInfo& from) {
 bool MyMesh::pagerPreprocessIncoming(const ContactInfo& from, const char*& text, bool is_channel) {
   (void)is_channel;
   if (!isPagerClient()) return true;
-  if (!isDispatchMatch(from)) return true;
+  if (!isDispatchMatch(from)) return false;
   pager_last_dispatch_rx = _ms->getMillis();
-  auto mp = handlePagerMultipart(from, text, &text);
-  if (mp == PagerMultipartAssembler::Result::Waiting || mp == PagerMultipartAssembler::Result::Rejected) return false;
   PagerAlertLevel lvl = parsePagerPriority(text, PagerAlertLevel::D);
   startPagerAlert(lvl);
   return true;
@@ -94,10 +91,6 @@ bool MyMesh::pagerPreprocessChannel(const char*& text) {
   if (!hasConnectionTo(pager_dispatch_cache.dispatch_pub_key)) return true;
   pager_last_dispatch_rx = _ms->getMillis();
   ContactInfo* dispatch_contact = lookupContactByPubKey(pager_dispatch_cache.dispatch_pub_key, 6);
-  if (dispatch_contact) {
-    auto mp = handlePagerMultipart(*dispatch_contact, text, &text);
-    if (mp == PagerMultipartAssembler::Result::Waiting || mp == PagerMultipartAssembler::Result::Rejected) return false;
-  }
   PagerAlertLevel lvl = parsePagerPriority(text, PagerAlertLevel::D);
   startPagerAlert(lvl);
   return true;
@@ -152,7 +145,6 @@ void MyMesh::pagerLoop() {
         pager_auto_login_pending = true;
       }
     }
-    checkPagerMultipartTimeout();
     if (pager_auto_login_pending && millisHasNowPassed(pager_next_login_attempt)) {
       // backoff cap: every 5 minutes after two failed attempts
       if (pager_next_login_attempt == 0) {
@@ -194,42 +186,7 @@ void MyMesh::handlePagerLED(bool connected) {
   }
 }
 #endif // LED_PIN
-
-PagerMultipartAssembler::Result MyMesh::handlePagerMultipart(const ContactInfo& from, const char* text, const char** out_text) {
-  if (out_text) *out_text = text;
-  if (!isPagerClient() || !pager_dispatch_cache.isSet() || !isDispatchMatch(from) || text == nullptr) {
-    return PagerMultipartAssembler::Result::Single;
-  }
-  auto now_ms = _ms->getMillis();
-  auto res = pager_multipart.ingest(from.id.pub_key, text, now_ms, pager_combined_msg, sizeof(pager_combined_msg));
-  if (res == PagerMultipartAssembler::Result::Complete) {
-    if (out_text) *out_text = pager_combined_msg;
-  } else if (res == PagerMultipartAssembler::Result::Rejected) {
-    // Rejects (bad counter/too many parts) are surfaced to dispatch so the sender can retry.
-    uint8_t missing = pager_multipart.missingMask();
-    ContactInfo* dispatch_contact = lookupContactByPubKey(pager_dispatch_cache.dispatch_pub_key, 6);
-    if (dispatch_contact && hasConnectionTo(dispatch_contact->id.pub_key)) {
-      snprintf(pager_combined_msg, sizeof(pager_combined_msg), "NACK page rejected missing_mask=%02X", missing);
-      uint32_t est;
-      sendCommandData(*dispatch_contact, now_ms / 1000, 0, pager_combined_msg, est);
-    }
-    pager_multipart.reset();
-  }
-  return res;
-}
-
-void MyMesh::checkPagerMultipartTimeout() {
-  if (!isPagerClient() || !pager_multipart.hasTimedOut(_ms->getMillis())) return;
-  uint8_t missing = pager_multipart.missingMask();
-  ContactInfo* dispatch_contact = lookupContactByPubKey(pager_dispatch_cache.dispatch_pub_key, 6);
-  if (dispatch_contact && hasConnectionTo(dispatch_contact->id.pub_key)) {
-    // Timeouts are treated as NACKs so dispatch can resend the whole page.
-    snprintf(pager_combined_msg, sizeof(pager_combined_msg), "NACK page timeout missing_mask=%02X", missing);
-    uint32_t est;
-    sendCommandData(*dispatch_contact, _ms->getMillis() / 1000, 0, pager_combined_msg, est);
-  }
-  pager_multipart.reset();
-}
+#endif // PIN_BUZZER
 #else
 void MyMesh::pagerLoop() {}
 #endif // PIN_BUZZER

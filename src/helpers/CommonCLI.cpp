@@ -189,7 +189,15 @@ uint8_t CommonCLI::buildAdvertData(uint8_t node_type, uint8_t* app_data) {
 }
 
 void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, char* reply) {
-    if (memcmp(command, "reboot", 6) == 0) {
+    if (strcmp(command, "help") == 0) {
+      // Keep concise; list only supported commands.
+      snprintf(reply, 160,
+        "Pager: pager list|assign|evict|otar|page. Core: advert, clock, neighbors, "
+        "neighbor.rm <pub>, tempradio, password, stats*, log*, get/set <key>.");
+#if defined(PAGER_MODE) && defined(DISPATCH_NODE)
+      // pager already listed first
+#endif
+    } else if (memcmp(command, "reboot", 6) == 0) {
       _board->reboot();  // doesn't return
     } else if (memcmp(command, "advert", 6) == 0) {
       _callbacks->sendSelfAdvertisement(1500);  // longer delay, give CLI response time to be sent first
@@ -259,6 +267,12 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
     } else if (memcmp(command, "clear stats", 11) == 0) {
       _callbacks->clearStats();
       strcpy(reply, "(OK - stats reset)");
+    } else if (strcmp(command, "stats") == 0) {
+      _callbacks->formatStatsReply(reply);
+    } else if (strcmp(command, "radio") == 0) {
+      _callbacks->formatRadioStatsReply(reply);
+    } else if (strcmp(command, "config") == 0) {
+      strcpy(reply, "Use: get <key> | set <key> <val>");
     /*
      * GET commands
      */

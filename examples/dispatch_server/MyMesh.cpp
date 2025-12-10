@@ -1,4 +1,12 @@
 #include "MyMesh.h"
+#if defined(PAGER_MODE)
+#include "../companion_radio/PagerProtocol.h"
+#endif
+
+// Watchdog feed helper provided by main.cpp.
+#if defined(NRF52_PLATFORM)
+extern void kickWatchdog();
+#endif
 
 #define REPLY_DELAY_MILLIS          1500
 #define PUSH_NOTIFY_DELAY_MILLIS    2000
@@ -365,6 +373,45 @@ void MyMesh::onAnonDataRecv(mesh::Packet *packet, const uint8_t *secret, const m
         }
       }
     }
+
+    // Send a short welcome hint after login. Keep brief to minimize airtime.
+    char notice[128];
+    if (client->isAdmin()) {
+      snprintf(notice, sizeof(notice), "Welcome admin. Use refresh for stats; for CLI commands type: help");
+    } else {
+      snprintf(notice, sizeof(notice), "Welcome. Use refresh buttons to pull settings; paging requires dispatcher.");
+    }
+    if (!sendServerNotice(client, notice)) {
+      MESH_DEBUG_PRINTLN("welcome notice send failed");
+    }
+
+#ifdef PAGER_MODE
+    // Ensure pager IDs get assigned automatically and communicated.
+    auto entry = findRosterByPub(sender.pub_key);
+    if (!entry && pager_roster_size < kMaxPagerRoster) {
+      pager_roster[pager_roster_size] = PagerRosterEntry();
+      entry = &pager_roster[pager_roster_size++];
+      memcpy(entry->pubkey, sender.pub_key, PUB_KEY_SIZE);
+      entry->pager_id = allocatePagerId();
+      entry->groups = (1u << 0); // default group A
+      entry->is_pager = 1;
+      entry->last_seen = getRTCClock()->getCurrentTime();
+      savePagerRoster();
+    }
+
+    if (entry && entry->isSet() && entry->pager_id != 0) {
+      sendPagerNDID(client, entry->pager_id, entry->groups, false);
+      if (client->isAdmin()) {
+        char roster_msg[96];
+        snprintf(roster_msg, sizeof(roster_msg), "Pager ID:%u Groups:%02X sent to node", entry->pager_id, entry->groups);
+        sendServerNotice(client, roster_msg);
+      } else {
+        char roster_msg[80];
+        snprintf(roster_msg, sizeof(roster_msg), "Pager assigned. ID:%u Groups:%02X", entry->pager_id, entry->groups);
+        sendServerNotice(client, roster_msg);
+      }
+    }
+#endif
   }
 }
 
@@ -420,6 +467,7 @@ void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, 
                           PUB_KEY_SIZE);
 
       uint8_t temp[166];
+      memset(temp, 0, sizeof(temp));
       bool send_ack;
       if (flags == TXT_TYPE_CLI_DATA) {
         if (client->isAdmin()) {
@@ -428,6 +476,13 @@ void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, 
           } else {
             handleCommand(sender_timestamp, (char *)&data[5], (char *)&temp[5]);
             temp[4] = (TXT_TYPE_CLI_DATA << 2); // attempt and flags,  (NOTE: legacy was: TXT_TYPE_PLAIN)
+#if defined(PAGER_MODE)
+            if (strncmp((char*)&data[5], "help", 4) == 0) {
+              // Send a second packet with pager-specific CLI hints to keep the main reply short.
+              static const char pager_help[] = "pager list|assign <pub|id> <groups>|evict <id|pub>|otar <pw>|page <group|id> <msg>";
+              sendServerNotice(client, pager_help);
+            }
+#endif
           }
           send_ack = false;
         } else {
@@ -435,16 +490,19 @@ void MyMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, 
           send_ack = false; // and no ACK...  user shoudn't be sending these
         }
       } else { // TXT_TYPE_PLAIN
-        if ((client->permissions & PERM_ACL_ROLE_MASK) == PERM_ACL_GUEST
-#ifdef DISPATCH_NODE
-            || !client->isAdmin() // dispatch should ignore non-admin pages
+        const char* msg_body = (const char*)&data[5];
+        bool reject_admin_tag = false;
+#if defined(PAGER_MODE) && defined(DISPATCH_NODE)
+        reject_admin_tag = pagerAdminRejectMessage(client->isAdmin(), msg_body, (char*)&temp[5], sizeof(temp) - 5);
 #endif
-        ) {
+        if ((client->permissions & PERM_ACL_ROLE_MASK) == PERM_ACL_GUEST) {
           temp[5] = 0;      // no reply
           send_ack = false; // no ACK
+        } else if (reject_admin_tag) {
+          send_ack = true; // acknowledge so the sender stops retrying
         } else {
           if (!is_retry) {
-            addPost(client, (const char *)&data[5]);
+            addPost(client, msg_body);
           }
           temp[5] = 0; // no reply (ACK is enough)
           send_ack = true;
@@ -607,6 +665,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   _prefs.tx_delay_factor = 0.5f; // was 0.25f;
   _prefs.direct_tx_delay_factor = 0.2f; // was zero
   StrHelper::strncpy(_prefs.node_name, ADVERT_NAME, sizeof(_prefs.node_name));
+#if defined(PAGER_MODE) && defined(DISPATCH_NODE)
+  ensureDispatchPrefix(); // enforce dispatch label on room name
+#endif
   _prefs.node_lat = ADVERT_LAT;
   _prefs.node_lon = ADVERT_LON;
   StrHelper::strncpy(_prefs.password, ADMIN_PASSWORD, sizeof(_prefs.password));
@@ -625,7 +686,11 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
 #endif
 
   // GPS defaults
+#if defined(PAGER_MODE) && defined(DISPATCH_NODE)
+  _prefs.gps_enabled = 1;  // dispatch nodes try to provide location by default
+#else
   _prefs.gps_enabled = 0;
+#endif
   _prefs.gps_interval = 0;
   _prefs.advert_loc_policy = ADVERT_LOC_PREFS;
 
@@ -637,6 +702,9 @@ MyMesh::MyMesh(mesh::MainBoard &board, mesh::Radio &radio, mesh::MillisecondCloc
   next_telem_poll = 0;
   next_telem_idx = 0;
   audit_enabled = false;
+#ifdef PAGER_MODE
+  pager_roster_size = 0;
+#endif
 }
 
 void MyMesh::begin(FILESYSTEM *fs) {
@@ -644,8 +712,15 @@ void MyMesh::begin(FILESYSTEM *fs) {
   _fs = fs;
   // load persisted prefs
   _cli.loadPrefs(_fs);
+#if defined(PAGER_MODE) && defined(DISPATCH_NODE) && ENV_INCLUDE_GPS == 1
+  // Re-enable GPS; admin can still toggle via CLI.
+  _prefs.gps_enabled = 1;
+#endif
 
   acl.load(_fs);
+#ifdef PAGER_MODE
+  loadPagerRoster();
+#endif
 
   radio_set_params(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
   radio_set_tx_power(_prefs.tx_power_dbm);
@@ -805,6 +880,13 @@ void MyMesh::handleCommand(uint32_t sender_timestamp, char *command, char *reply
     }
     reply[0] = 0;
   }
+#if defined(PAGER_MODE) && defined(DISPATCH_NODE)
+  else if (memcmp(command, "pager ", 6) == 0) {
+    if (!handlePagerCLI(command + 6, reply)) {
+      strcpy(reply, "Err - pager cmd");
+    }
+  }
+#endif
   else{
     _cli.handleCommand(sender_timestamp, command, reply);  // common CLI commands
   }
@@ -818,6 +900,8 @@ void MyMesh::loop() {
   mesh::Mesh::loop();
 
   if (millisHasNowPassed(next_push) && acl.getNumClients() > 0) {
+    static uint32_t busy_log_counter = 0;
+    static uint32_t check_log_counter = 0;
     // check for ACK timeouts
     for (int i = 0; i < acl.getNumClients(); i++) {
       auto c = acl.getClientByIdx(i);
@@ -825,6 +909,10 @@ void MyMesh::loop() {
         c->extra.room.push_failures++;
         c->extra.room.pending_ack = 0; // reset  (TODO: keep prev expected_ack's in a list, incase they arrive LATER, after we retry)
         MESH_DEBUG_PRINTLN("pending ACK timed out: push_failures: %d", (uint32_t)c->extra.room.push_failures);
+        if (c->extra.room.push_failures >= 3) {
+          // Reset busy state after repeated failures so we don't stall forever.
+          c->extra.room.push_failures = 0;
+        }
       }
     }
     // check next Round-Robin client, and sync next new post
@@ -832,7 +920,12 @@ void MyMesh::loop() {
     bool did_push = false;
     if (client->extra.room.pending_ack == 0 && client->last_activity != 0 &&
         client->extra.room.push_failures < 3) { // not already waiting for ACK, AND not evicted, AND retries not max
-      MESH_DEBUG_PRINTLN("loop - checking for client %02X", (uint32_t)client->id.pub_key[0]);
+      if ((check_log_counter++ % 64) == 0) {
+        MESH_DEBUG_PRINTLN("loop - checking client %02X%02X%02X",
+                           (uint32_t)client->id.pub_key[0],
+                           (uint32_t)client->id.pub_key[1],
+                           (uint32_t)client->id.pub_key[2]);
+      }
       uint32_t now = getRTCClock()->getCurrentTime();
       for (int k = 0, idx = next_post_idx; k < MAX_UNSYNCED_POSTS; k++) {
         auto p = &posts[idx];
@@ -842,13 +935,22 @@ void MyMesh::loop() {
           // push this post to Client, then wait for ACK
           pushPostToClient(client, *p);
           did_push = true;
-          MESH_DEBUG_PRINTLN("loop - pushed to client %02X: %s", (uint32_t)client->id.pub_key[0], p->text);
+          MESH_DEBUG_PRINTLN("loop - pushed to client %02X%02X%02X: %s",
+                             (uint32_t)client->id.pub_key[0],
+                             (uint32_t)client->id.pub_key[1],
+                             (uint32_t)client->id.pub_key[2],
+                             p->text);
           break;
         }
         idx = (idx + 1) % MAX_UNSYNCED_POSTS; // wrap to start of cyclic queue
       }
     } else {
-      MESH_DEBUG_PRINTLN("loop - skipping busy (or evicted) client %02X", (uint32_t)client->id.pub_key[0]);
+      if ((busy_log_counter++ % 64) == 0) {
+        MESH_DEBUG_PRINTLN("loop - skipping busy/evicted client %02X%02X%02X",
+                           (uint32_t)client->id.pub_key[0],
+                           (uint32_t)client->id.pub_key[1],
+                           (uint32_t)client->id.pub_key[2]);
+      }
     }
     next_client_idx = (next_client_idx + 1) % acl.getNumClients(); // round robin polling for each client
 
@@ -873,7 +975,14 @@ void MyMesh::loop() {
     updateAdvertTimer(); // schedule next local advert
   }
 
+#ifdef PAGER_MODE
   pollTelemetryRoundRobin();
+#endif
+
+#if defined(NRF52_PLATFORM)
+  // Feed the watchdog during longer mesh loop iterations (push/telemetry can run for a while).
+  kickWatchdog();
+#endif
 
   if (set_radio_at && millisHasNowPassed(set_radio_at)) { // apply pending (temporary) radio params
     set_radio_at = 0;                                     // clear timer
